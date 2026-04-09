@@ -1,0 +1,24 @@
+# fly.toml — Konfigurasi Fly.io untuk XiaoZhi MCP Server
+
+app = "xiaozhi-mcp"        # ganti dengan nama unik kamu, misal: xiaozhi-mcp-namakamu
+primary_region = "sin"     # Singapore — paling dekat dari Indonesia
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # MCP_ENDPOINT diset via: fly secrets set MCP_ENDPOINT=...
+  # Jangan tulis token di sini!
+
+[http_service]
+  # MCP server ini tidak butuh HTTP, tapi Fly.io perlu port
+  # agar container tidak langsung dimatikan
+  internal_port = 8080
+  force_https   = false
+  auto_stop_machines  = false   # ← PENTING: jangan auto-stop!
+  auto_start_machines = true
+  min_machines_running = 1      # selalu ada 1 instance jalan
+
+[[vm]]
+  memory = "256mb"
+  cpus   = 1

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "xiaozhi-tools": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["music_news_server.py"]
+    }
+  }
+}
