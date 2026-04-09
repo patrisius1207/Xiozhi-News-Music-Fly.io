@@ -122,7 +122,7 @@ def search_music_url(song_name: str) -> dict:
              "--get-url",
              "-f", "140/bestaudio[ext=m4a]/bestaudio[acodec=mp4a]/bestaudio",
              "--no-playlist", "--quiet"],
-            capture_output=True, text=True, timeout=30
+            capture_output=True, text=True, timeout=60
         )
         audio_url = audio_result.stdout.strip().splitlines()[0] if audio_result.stdout.strip() else ""
 
