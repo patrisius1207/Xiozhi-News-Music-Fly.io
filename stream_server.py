@@ -1,6 +1,5 @@
 # stream_server.py
-# YouTube Direct Streaming - Versi Stabil 2026 untuk ESP32-S3
-# Prioritas: cepat, ukuran kecil, kompatibel AAC/m4a
+# YouTube → MP3 Mono 64kbps Direct Stream (Paling Stabil untuk ESP32-S3)
 
 import subprocess
 import json
@@ -14,55 +13,48 @@ logging.basicConfig(
 )
 logger = logging.getLogger("yt_stream")
 
-FLY_HOST = "xiaozhi-mcp.fly.dev"   # Ganti kalau nama app Fly.io kamu berbeda
+FLY_HOST = "xiaozhi-mcp.fly.dev"
 
-# Format audio yang lebih fleksibel & ringan (2026)
-AUDIO_FORMAT = (
-    "bestaudio[ext=m4a]/140/"           # m4a AAC (paling kompatibel)
-    "bestaudio[abr<=128][ext=m4a]/"     # maks 128kbps
-    "251/"                              # opus webm (ringan)
-    "bestaudio/best"                    # fallback
-)
-
-def get_direct_audio_url(query: str):
-    """Cari lagu dengan query lebih baik"""
+def get_mp3_audio_url(query: str):
     try:
-        logger.info(f"Mencari musik: {query}")
+        logger.info(f"Mencari: {query}")
 
-        # Gunakan ytsearch dengan judul + artis yang lebih akurat
+        # yt-dlp ambil audio lalu langsung konversi ke MP3 mono ringan
         cmd = [
             "yt-dlp",
-            f"ytsearch5:{query}",           # cari 5 hasil, ambil yang terbaik
+            f"ytsearch3:{query}",                    # cari 3 hasil terbaik
             "--quiet", "--no-warnings",
-            "-f", AUDIO_FORMAT,
+            "-f", "bestaudio/best",                  # ambil audio terbaik dulu
+            "--extract-audio",
+            "--audio-format", "mp3",
+            "--postprocessor-args", "ffmpeg:-ac 1 -ar 22050 -b:a 64k",  # mono + super ringan
             "--get-title",
             "--get-url",
             "--no-playlist",
-            "--extractor-args", "youtube:player_client=web,android"   # membantu bypass perubahan YouTube
+            "--extractor-args", "youtube:player_client=web,android,ios"
         ]
 
-        result = subprocess.check_output(cmd, text=True, timeout=30).strip().splitlines()
+        result = subprocess.check_output(cmd, text=True, timeout=35).strip().splitlines()
 
         if len(result) >= 2:
             title = result[0].strip()
             direct_url = result[1].strip()
-            logger.info(f"✅ Ditemukan: {title}")
+            logger.info(f"✅ Ditemukan & dikonversi MP3: {title}")
             return {
                 "status": "success",
                 "title": title,
                 "audio_url": direct_url,
-                "format": "m4a/aac"
+                "format": "mp3_mono_64kbps"
             }
         else:
-            logger.warning(f"Tidak menemukan hasil untuk: {query}")
             return {"status": "error", "message": "Lagu tidak ditemukan"}
 
     except subprocess.TimeoutExpired:
         logger.error("Timeout yt-dlp")
-        return {"status": "error", "message": "Timeout saat mencari lagu"}
+        return {"status": "error", "message": "Timeout saat memproses lagu"}
     except Exception as e:
-        logger.error(f"Error yt-dlp: {str(e)[:200]}")
-        return {"status": "error", "message": "Gagal mengambil sumber musik"}
+        logger.error(f"Error: {str(e)[:150]}")
+        return {"status": "error", "message": "Gagal memproses musik"}
 
 
 class StreamHandler(BaseHTTPRequestHandler):
@@ -74,7 +66,10 @@ class StreamHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path in ("/", "/health"):
-            self._json(200, {"status": "ok", "type": "youtube_direct_stream"})
+            self._json(200, {
+                "status": "ok",
+                "format": "MP3 mono 64kbps (paling ringan & stabil)"
+            })
             return
 
         if parsed.path == "/stream_pcm":
@@ -82,20 +77,19 @@ class StreamHandler(BaseHTTPRequestHandler):
             song   = params.get("song", [""])[0].strip()
             artist = params.get("artist", [""])[0].strip()
 
-            # Gabungkan query dengan baik
             query = f"{song} {artist}".strip() if artist else song
             if not query:
-                self._json(400, {"error": "song wajib diisi"})
+                self._json(400, {"error": "song wajib"})
                 return
 
-            result = get_direct_audio_url(query)
+            result = get_mp3_audio_url(query)
 
             if result["status"] == "success":
                 self._json(200, {
                     "title": result["title"],
                     "audio_url": result["audio_url"],
                     "source": "youtube",
-                    "format": "m4a"
+                    "format": "mp3"
                 })
             else:
                 self._json(404, {"error": result["message"], "query": query})
@@ -114,7 +108,7 @@ class StreamHandler(BaseHTTPRequestHandler):
 
 def run(port: int = 8080):
     server = ThreadingHTTPServer(("0.0.0.0", port), StreamHandler)
-    logger.info(f"🎵 YouTube Streaming Server started (port {port}) - Format m4a low bitrate")
+    logger.info("🎵 Server MP3 Mono 64kbps started - Paling ramah untuk ESP32")
     server.serve_forever()
 
 
