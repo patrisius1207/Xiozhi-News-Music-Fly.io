@@ -1,5 +1,5 @@
 # stream_server.py
-# YouTube Streaming - Anti-Bot 2026 + Pure Audio MP3 Mono 64kbps
+# YouTube → MP3 Mono 64kbps (Stable tanpa impersonate dulu)
 
 import subprocess
 import json
@@ -20,20 +20,19 @@ def get_stable_mp3_url(query: str):
 
         cmd = [
             "yt-dlp",
-            f"ytsearch3:{query} official audio",     # tambah keyword "official audio" agar lebih akurat lagu
+            f"ytsearch3:{query} official audio",   # bantu cari lagu asli
             "--quiet", "--no-warnings",
-            "--impersonate", "chrome",               # ← Anti-bot utama (TLS fingerprint)
-            "-f", "bestaudio/best",                  # Pure audio only (hindari itag video)
+            "-f", "bestaudio/best",
             "-x", "--audio-format", "mp3",
-            "--postprocessor-args", "ffmpeg:-ac 1 -ar 22050 -b:a 64k",  # Mono 64kbps
+            "--postprocessor-args", "ffmpeg:-ac 1 -ar 22050 -b:a 64k",  # mono ringan
             "--get-title",
             "--get-url",
             "--no-playlist",
-            "--extractor-args", "youtube:player_client=web,android,ios,web_embedded",
+            "--extractor-args", "youtube:player_client=web,android,ios",
             "--force-ipv4",
             "--no-check-certificate",
-            "--sleep-interval", "1.5",
-            "--max-sleep-interval", "4"
+            "--sleep-interval", "2",
+            "--max-sleep-interval", "5"
         ]
 
         result = subprocess.check_output(cmd, text=True, timeout=50).strip().splitlines()
@@ -42,7 +41,6 @@ def get_stable_mp3_url(query: str):
             title = result[0].strip()
             direct_url = result[1].strip()
             logger.info(f"✅ Berhasil: {title}")
-            logger.info(f"URL length: {len(direct_url)} chars")
             return {
                 "status": "success",
                 "title": title,
@@ -58,10 +56,10 @@ def get_stable_mp3_url(query: str):
     except Exception as e:
         error_str = str(e).lower()
         if "sign in to confirm" in error_str or "bot" in error_str:
-            logger.error("YouTube bot detection kuat!")
-            return {"status": "error", "message": "YouTube sedang membatasi. Coba lagi 10-15 menit"}
+            logger.error("YouTube bot detection!")
+            return {"status": "error", "message": "YouTube membatasi akses. Coba lagi 10-15 menit"}
         logger.error(f"Error yt-dlp: {str(e)[:250]}")
-        return {"status": "error", "message": "Gagal memproses. Coba lagu lain"}
+        return {"status": "error", "message": "Gagal memproses lagu. Coba lagi"}
 
 
 class StreamHandler(BaseHTTPRequestHandler):
@@ -73,7 +71,7 @@ class StreamHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path in ("/", "/health"):
-            self._json(200, {"status": "ok", "note": "Anti-bot + impersonate chrome active"})
+            self._json(200, {"status": "ok", "note": "MP3 mono 64kbps mode"})
             return
 
         if parsed.path == "/stream_pcm":
@@ -86,8 +84,7 @@ class StreamHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "song wajib"})
                 return
 
-            # Delay kecil untuk mengurangi rate limit
-            time.sleep(1.0)
+            time.sleep(1.0)   # kurangi rate limit
 
             result = get_stable_mp3_url(query)
 
@@ -115,7 +112,7 @@ class StreamHandler(BaseHTTPRequestHandler):
 
 def run(port: int = 8080):
     server = ThreadingHTTPServer(("0.0.0.0", port), StreamHandler)
-    logger.info("🎵 YouTube MP3 Server - impersonate chrome + pure audio")
+    logger.info("🎵 YouTube MP3 Mono Server - Mode Stabil (tanpa impersonate)")
     server.serve_forever()
 
 
