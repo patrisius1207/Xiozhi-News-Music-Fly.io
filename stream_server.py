@@ -1,9 +1,10 @@
 # stream_server.py
-# YouTube → Pure Audio MP3 Mono 64kbps (Fix 302 Redirect + Stabil 2026)
+# Fix "Sign in to confirm you're not a bot" + Pure Audio MP3 Mono 64kbps
 
 import subprocess
 import json
 import logging
+import time
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -17,28 +18,30 @@ def get_stable_mp3_url(query: str):
     try:
         logger.info(f"Mencari: {query}")
 
+        # Strategi anti-bot 2026
         cmd = [
             "yt-dlp",
             f"ytsearch3:{query}",
             "--quiet", "--no-warnings",
-            "-f", "bestaudio/best",                  # Pure audio only (hindari itag=18)
+            "-f", "bestaudio/best",
             "-x", "--audio-format", "mp3",
-            "--postprocessor-args", "ffmpeg:-ac 1 -ar 22050 -b:a 64k",  # Mono 64kbps
+            "--postprocessor-args", "ffmpeg:-ac 1 -ar 22050 -b:a 64k",   # Mono super ringan
             "--get-title",
             "--get-url",
             "--no-playlist",
-            "--extractor-args", "youtube:player_client=web,android,ios,web_embedded",
-            "--force-ipv4",                          # Kadang membantu stabilitas
-            "--no-check-certificate"                 # Kurangi masalah SSL pada direct link
+            "--extractor-args", "youtube:player_client=android,web,ios,web_embedded",  # Multiple clients
+            "--force-ipv4",
+            "--sleep-interval", "2",          # Delay kecil antar request
+            "--max-sleep-interval", "5",
+            "--no-check-certificate"
         ]
 
-        result = subprocess.check_output(cmd, text=True, timeout=40).strip().splitlines()
+        result = subprocess.check_output(cmd, text=True, timeout=45).strip().splitlines()
 
         if len(result) >= 2:
             title = result[0].strip()
             direct_url = result[1].strip()
-            logger.info(f"✅ Pure MP3 mono siap: {title}")
-            logger.info(f"URL length: {len(direct_url)} chars")
+            logger.info(f"✅ Berhasil (anti-bot): {title}")
             return {
                 "status": "success",
                 "title": title,
@@ -50,10 +53,14 @@ def get_stable_mp3_url(query: str):
 
     except subprocess.TimeoutExpired:
         logger.error("Timeout yt-dlp")
-        return {"status": "error", "message": "Timeout memproses lagu"}
+        return {"status": "error", "message": "Timeout saat memproses lagu"}
     except Exception as e:
-        logger.error(f"Error yt-dlp: {str(e)[:200]}")
-        return {"status": "error", "message": "Gagal mengambil audio"}
+        error_str = str(e)
+        if "Sign in to confirm" in error_str or "bot" in error_str.lower():
+            logger.error("YouTube bot detection terdeteksi!")
+            return {"status": "error", "message": "YouTube sedang membatasi akses (bot detection). Coba lagi 5-10 menit"}
+        logger.error(f"Error yt-dlp: {error_str[:300]}")
+        return {"status": "error", "message": "Gagal mengambil audio. Coba lagu lain"}
 
 
 class StreamHandler(BaseHTTPRequestHandler):
@@ -65,7 +72,7 @@ class StreamHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path in ("/", "/health"):
-            self._json(200, {"status": "ok", "format": "Pure MP3 mono 64kbps"})
+            self._json(200, {"status": "ok", "note": "Anti-bot mode active"})
             return
 
         if parsed.path == "/stream_pcm":
@@ -77,6 +84,9 @@ class StreamHandler(BaseHTTPRequestHandler):
             if not query:
                 self._json(400, {"error": "song wajib"})
                 return
+
+            # Tambah delay kecil jika terlalu banyak request berturut-turut
+            time.sleep(0.8)
 
             result = get_stable_mp3_url(query)
 
@@ -104,7 +114,7 @@ class StreamHandler(BaseHTTPRequestHandler):
 
 def run(port: int = 8080):
     server = ThreadingHTTPServer(("0.0.0.0", port), StreamHandler)
-    logger.info("🎵 Pure Audio MP3 Mono 64kbps Server (Fix 302 Redirect)")
+    logger.info("🎵 YouTube Stream Server - Anti Bot Detection Mode Active")
     server.serve_forever()
 
 
