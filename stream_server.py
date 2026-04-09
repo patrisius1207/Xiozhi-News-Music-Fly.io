@@ -1,5 +1,5 @@
 # stream_server.py
-# YouTube → MP3 Mono 64kbps (Paling Stabil & Hemat RAM untuk ESP32-S3)
+# YouTube → Pure Audio MP3 Mono 64kbps (Fix 302 Redirect + Stabil 2026)
 
 import subprocess
 import json
@@ -13,23 +13,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger("yt_stream")
 
-FLY_HOST = "xiaozhi-mcp.fly.dev"
-
-def get_mp3_audio_url(query: str):
+def get_stable_mp3_url(query: str):
     try:
         logger.info(f"Mencari: {query}")
 
         cmd = [
             "yt-dlp",
-            f"ytsearch3:{query}",                    # Cari 3 hasil, ambil terbaik
+            f"ytsearch3:{query}",
             "--quiet", "--no-warnings",
-            "-f", "bestaudio/best",
-            "-x", "--audio-format", "mp3",           # Ekstrak + konversi ke MP3
-            "--postprocessor-args", "ffmpeg:-ac 1 -ar 22050 -b:a 64k",  # Mono + super ringan
+            "-f", "bestaudio/best",                  # Pure audio only (hindari itag=18)
+            "-x", "--audio-format", "mp3",
+            "--postprocessor-args", "ffmpeg:-ac 1 -ar 22050 -b:a 64k",  # Mono 64kbps
             "--get-title",
             "--get-url",
             "--no-playlist",
-            "--extractor-args", "youtube:player_client=web,android,ios,web_embedded"
+            "--extractor-args", "youtube:player_client=web,android,ios,web_embedded",
+            "--force-ipv4",                          # Kadang membantu stabilitas
+            "--no-check-certificate"                 # Kurangi masalah SSL pada direct link
         ]
 
         result = subprocess.check_output(cmd, text=True, timeout=40).strip().splitlines()
@@ -37,7 +37,8 @@ def get_mp3_audio_url(query: str):
         if len(result) >= 2:
             title = result[0].strip()
             direct_url = result[1].strip()
-            logger.info(f"✅ Ditemukan & dikonversi MP3 mono: {title}")
+            logger.info(f"✅ Pure MP3 mono siap: {title}")
+            logger.info(f"URL length: {len(direct_url)} chars")
             return {
                 "status": "success",
                 "title": title,
@@ -49,10 +50,10 @@ def get_mp3_audio_url(query: str):
 
     except subprocess.TimeoutExpired:
         logger.error("Timeout yt-dlp")
-        return {"status": "error", "message": "Timeout saat memproses"}
+        return {"status": "error", "message": "Timeout memproses lagu"}
     except Exception as e:
         logger.error(f"Error yt-dlp: {str(e)[:200]}")
-        return {"status": "error", "message": "Gagal memproses musik"}
+        return {"status": "error", "message": "Gagal mengambil audio"}
 
 
 class StreamHandler(BaseHTTPRequestHandler):
@@ -64,7 +65,7 @@ class StreamHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path in ("/", "/health"):
-            self._json(200, {"status": "ok", "format": "MP3 mono 64kbps"})
+            self._json(200, {"status": "ok", "format": "Pure MP3 mono 64kbps"})
             return
 
         if parsed.path == "/stream_pcm":
@@ -77,7 +78,7 @@ class StreamHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "song wajib"})
                 return
 
-            result = get_mp3_audio_url(query)
+            result = get_stable_mp3_url(query)
 
             if result["status"] == "success":
                 self._json(200, {
@@ -103,7 +104,7 @@ class StreamHandler(BaseHTTPRequestHandler):
 
 def run(port: int = 8080):
     server = ThreadingHTTPServer(("0.0.0.0", port), StreamHandler)
-    logger.info("🎵 MP3 Mono 64kbps Server started - Versi paling stabil untuk ESP32")
+    logger.info("🎵 Pure Audio MP3 Mono 64kbps Server (Fix 302 Redirect)")
     server.serve_forever()
 
 
