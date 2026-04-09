@@ -1,9 +1,11 @@
 # stream_server.py
-# HTTP Audio Streaming Server untuk ESP32
-# Port 8080 — diakses via https://xiaozhi-mcp.fly.dev/stream_pcm?song=...
-# Firmware ESP32 diupdate: base_url = "http://xiaozhi-mcp.fly.dev"
+# HTTP API Server untuk ESP32 musik
+# Endpoint: GET /stream_pcm?song=...&artist=...
+# Response: JSON { "audio_url": "...", "title": "...", "artist": "..." }
+# Firmware kemudian download audio dari audio_url secara langsung
 
 import subprocess
+import json
 import logging
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
@@ -15,23 +17,58 @@ logging.basicConfig(
 logger = logging.getLogger("stream_server")
 
 
-def find_youtube(query: str) -> tuple:
-    """Cari di YouTube, return (video_id, title) atau ('', '')."""
+def get_youtube_direct_url(query: str) -> dict:
+    """
+    Cari lagu di YouTube, return direct audio URL.
+    Format 140 = m4a 128kbps, kompatibel ESP32.
+    """
     try:
-        result = subprocess.run(
+        # Step 1: cari video ID + judul
+        search = subprocess.run(
             ["yt-dlp", f"ytsearch1:{query}",
              "--get-id", "--get-title", "--no-playlist", "--quiet"],
             capture_output=True, text=True, timeout=30
         )
-        lines = result.stdout.strip().splitlines()
-        if len(lines) >= 2:
-            return lines[1], lines[0]  # (video_id, title)
+        lines = search.stdout.strip().splitlines()
+        if len(lines) < 2:
+            return {}
+
+        title    = lines[0]
+        video_id = lines[1]
+        logger.info(f"Ditemukan: {title} ({video_id})")
+
+        # Step 2: ambil direct URL audio
+        audio = subprocess.run(
+            ["yt-dlp",
+             f"https://www.youtube.com/watch?v={video_id}",
+             "--get-url",
+             "-f", "140/bestaudio[ext=m4a]/bestaudio[acodec=mp4a]/bestaudio",
+             "--no-playlist", "--quiet"],
+            capture_output=True, text=True, timeout=30
+        )
+        audio_url = audio.stdout.strip().splitlines()[0] \
+                    if audio.stdout.strip() else ""
+
+        if not audio_url:
+            return {}
+
+        logger.info(f"Audio URL didapat ({len(audio_url)} chars)")
+        return {
+            "title":     title,
+            "artist":    "",
+            "audio_url": audio_url,
+            "lyric_url": "",   # kosong — firmware handle gracefully
+        }
+
+    except subprocess.TimeoutExpired:
+        logger.error("Timeout mencari lagu")
+        return {}
     except Exception as e:
-        logger.error(f"YouTube search error: {e}")
-    return "", ""
+        logger.error(f"Error: {e}")
+        return {}
 
 
-class AudioStreamHandler(BaseHTTPRequestHandler):
+class MusicAPIHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         logger.info(f"{self.address_string()} {fmt % args}")
@@ -39,14 +76,13 @@ class AudioStreamHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
 
-        # Health check untuk Fly.io
+        # ── Health check ──────────────────────────────────────────────
         if parsed.path in ("/", "/health"):
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"XiaoZhi Stream OK")
+            self._json(200, {"status": "ok", "service": "XiaoZhi Stream"})
             return
 
         # ── /stream_pcm?song=...&artist=... ──────────────────────────
+        # Firmware mengharapkan JSON response berisi audio_url
         if parsed.path == "/stream_pcm":
             params = parse_qs(parsed.query)
             song   = params.get("song",   [""])[0].strip()
@@ -54,65 +90,41 @@ class AudioStreamHandler(BaseHTTPRequestHandler):
             query  = f"{artist} {song}".strip() if artist else song
 
             if not query:
-                self.send_error(400, "Parameter 'song' wajib diisi")
+                self._json(400, {"error": "Parameter 'song' wajib diisi"})
                 return
 
             logger.info(f"Request: song='{song}' artist='{artist}'")
 
-            video_id, title = find_youtube(query)
-            if not video_id:
-                self.send_error(404, "Lagu tidak ditemukan")
+            result = get_youtube_direct_url(query)
+            if not result:
+                self._json(404, {"error": "Lagu tidak ditemukan"})
                 return
 
-            logger.info(f"Streaming: {title} ({video_id})")
-
-            try:
-                self.send_response(200)
-                self.send_header("Content-Type", "audio/mp4")
-                self.send_header("Connection", "close")
-                self.send_header(
-                    "X-Song-Title",
-                    title.encode("ascii", "replace").decode()
-                )
-                self.end_headers()
-
-                # Pipe audio langsung dari yt-dlp ke ESP32
-                proc = subprocess.Popen(
-                    ["yt-dlp",
-                     f"https://www.youtube.com/watch?v={video_id}",
-                     "-f", "140/bestaudio[ext=m4a]/bestaudio[acodec=mp4a]/bestaudio",
-                     "-o", "-",
-                     "--no-playlist", "--quiet"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL
-                )
-
-                sent = 0
-                while True:
-                    chunk = proc.stdout.read(4096)
-                    if not chunk:
-                        break
-                    try:
-                        self.wfile.write(chunk)
-                        self.wfile.flush()
-                        sent += len(chunk)
-                    except (BrokenPipeError, ConnectionResetError):
-                        logger.info(f"ESP32 tutup koneksi setelah {sent//1024}KB")
-                        break
-
-                proc.terminate()
-                logger.info(f"Selesai: {title} ({sent//1024}KB)")
-
-            except Exception as e:
-                logger.error(f"Streaming error: {e}")
+            # Kembalikan JSON — persis format yang diharapkan firmware
+            self._json(200, {
+                "title":     result["title"],
+                "artist":    result.get("artist", ""),
+                "audio_url": result["audio_url"],
+                "lyric_url": result.get("lyric_url", ""),
+            })
             return
 
-        self.send_error(404, "Not found")
+        self._json(404, {"error": "Not found"})
+
+    def _json(self, code: int, data: dict):
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
 
 def run(port: int = 8080):
-    server = HTTPServer(("0.0.0.0", port), AudioStreamHandler)
-    logger.info(f"Stream server berjalan di :{port}")
+    server = HTTPServer(("0.0.0.0", port), MusicAPIHandler)
+    logger.info(f"Music API server berjalan di :{port}")
+    logger.info("Endpoint: GET /stream_pcm?song=JUDUL&artist=ARTIS")
+    logger.info("Response: JSON { audio_url, title, artist, lyric_url }")
     server.serve_forever()
 
 
