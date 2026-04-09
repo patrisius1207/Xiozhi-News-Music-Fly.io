@@ -23,9 +23,14 @@ urllib.request.urlretrieve(\
 'mcp_pipe.py'\
 )"
 
+<<<<<<< HEAD
 # Copy startup script
 COPY start.sh .
 RUN chmod +x start.sh
 
 # Jalankan MCP pipe + HTTP keepalive
 CMD ["./start.sh"]
+=======
+# Jalankan MCP pipe
+CMD ["python", "mcp_pipe.py"]
+>>>>>>> 9778553e707e92cf2bc84f0d1fa84159e8859b5b
