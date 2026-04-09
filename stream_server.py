@@ -1,5 +1,5 @@
 # stream_server.py
-# YouTube → MP3 Mono 64kbps Direct Stream (Paling Stabil untuk ESP32-S3)
+# YouTube → MP3 Mono 64kbps (Paling Stabil & Hemat RAM untuk ESP32-S3)
 
 import subprocess
 import json
@@ -19,27 +19,25 @@ def get_mp3_audio_url(query: str):
     try:
         logger.info(f"Mencari: {query}")
 
-        # yt-dlp ambil audio lalu langsung konversi ke MP3 mono ringan
         cmd = [
             "yt-dlp",
-            f"ytsearch3:{query}",                    # cari 3 hasil terbaik
+            f"ytsearch3:{query}",                    # Cari 3 hasil, ambil terbaik
             "--quiet", "--no-warnings",
-            "-f", "bestaudio/best",                  # ambil audio terbaik dulu
-            "--extract-audio",
-            "--audio-format", "mp3",
-            "--postprocessor-args", "ffmpeg:-ac 1 -ar 22050 -b:a 64k",  # mono + super ringan
+            "-f", "bestaudio/best",
+            "-x", "--audio-format", "mp3",           # Ekstrak + konversi ke MP3
+            "--postprocessor-args", "ffmpeg:-ac 1 -ar 22050 -b:a 64k",  # Mono + super ringan
             "--get-title",
             "--get-url",
             "--no-playlist",
-            "--extractor-args", "youtube:player_client=web,android,ios"
+            "--extractor-args", "youtube:player_client=web,android,ios,web_embedded"
         ]
 
-        result = subprocess.check_output(cmd, text=True, timeout=35).strip().splitlines()
+        result = subprocess.check_output(cmd, text=True, timeout=40).strip().splitlines()
 
         if len(result) >= 2:
             title = result[0].strip()
             direct_url = result[1].strip()
-            logger.info(f"✅ Ditemukan & dikonversi MP3: {title}")
+            logger.info(f"✅ Ditemukan & dikonversi MP3 mono: {title}")
             return {
                 "status": "success",
                 "title": title,
@@ -51,9 +49,9 @@ def get_mp3_audio_url(query: str):
 
     except subprocess.TimeoutExpired:
         logger.error("Timeout yt-dlp")
-        return {"status": "error", "message": "Timeout saat memproses lagu"}
+        return {"status": "error", "message": "Timeout saat memproses"}
     except Exception as e:
-        logger.error(f"Error: {str(e)[:150]}")
+        logger.error(f"Error yt-dlp: {str(e)[:200]}")
         return {"status": "error", "message": "Gagal memproses musik"}
 
 
@@ -66,10 +64,7 @@ class StreamHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path in ("/", "/health"):
-            self._json(200, {
-                "status": "ok",
-                "format": "MP3 mono 64kbps (paling ringan & stabil)"
-            })
+            self._json(200, {"status": "ok", "format": "MP3 mono 64kbps"})
             return
 
         if parsed.path == "/stream_pcm":
@@ -108,7 +103,7 @@ class StreamHandler(BaseHTTPRequestHandler):
 
 def run(port: int = 8080):
     server = ThreadingHTTPServer(("0.0.0.0", port), StreamHandler)
-    logger.info("🎵 Server MP3 Mono 64kbps started - Paling ramah untuk ESP32")
+    logger.info("🎵 MP3 Mono 64kbps Server started - Versi paling stabil untuk ESP32")
     server.serve_forever()
 
 
