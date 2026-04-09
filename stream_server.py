@@ -1,5 +1,5 @@
-# stream_server.py
-# Pure MP3 Mono 64kbps + Force Audio Only (Fix itag=18 & 302)
+# stream_server.py - FINAL VERSION untuk firmware kamu
+# Pure MP3 Mono 64kbps + Force Audio Only + Kurangi Redirect
 
 import subprocess
 import json
@@ -22,40 +22,39 @@ def get_pure_mp3_url(query: str):
             "yt-dlp",
             f"ytsearch3:{query} official audio",
             "--quiet", "--no-warnings",
-            "-f", "bestaudio/best",                  # Force audio only
-            "-x", "--audio-format", "mp3",           # Extract + convert ke MP3
-            "--postprocessor-args", "ffmpeg:-ac 1 -ar 22050 -b:a 64k -vn",  # Mono + no video
+            "-f", "bestaudio/best",
+            "-x", "--audio-format", "mp3",
+            "--postprocessor-args", "ffmpeg:-ac 1 -ar 22050 -b:a 64k -vn",   # mono + no video
             "--get-title",
             "--get-url",
             "--no-playlist",
-            "--extractor-args", "youtube:player_client=web,android,ios",
+            "--extractor-args", "youtube:player_client=android,web",
             "--force-ipv4",
             "--no-check-certificate",
-            "--sleep-interval", "2",
-            "--max-sleep-interval", "5"
+            "--sleep-interval", "3",
+            "--max-sleep-interval", "7"
         ]
 
-        result = subprocess.check_output(cmd, text=True, timeout=50).strip().splitlines()
+        result = subprocess.check_output(cmd, text=True, timeout=60).strip().splitlines()
 
         if len(result) >= 2:
             title = result[0].strip()
             direct_url = result[1].strip()
             logger.info(f"✅ Pure MP3 mono: {title}")
-            logger.info(f"URL length: {len(direct_url)} chars (should be direct mp3)")
+            logger.info(f"URL length: {len(direct_url)} chars")
             return {
                 "status": "success",
                 "title": title,
                 "audio_url": direct_url,
                 "format": "mp3"
             }
-        else:
-            return {"status": "error", "message": "Lagu tidak ditemukan"}
+        return {"status": "error", "message": "Lagu tidak ditemukan"}
 
     except Exception as e:
         error_str = str(e).lower()
-        if "sign in to confirm" in error_str or "bot" in error_str:
-            return {"status": "error", "message": "YouTube bot detection. Coba lagi 10-15 menit"}
-        logger.error(f"Error yt-dlp: {str(e)[:250]}")
+        if "sign in" in error_str or "bot" in error_str:
+            return {"status": "error", "message": "YouTube batasi akses. Tunggu 10-15 menit"}
+        logger.error(f"yt-dlp error: {str(e)[:250]}")
         return {"status": "error", "message": "Gagal memproses lagu"}
 
 class StreamHandler(BaseHTTPRequestHandler):
@@ -79,7 +78,7 @@ class StreamHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "song wajib"})
                 return
 
-            time.sleep(1.2)   # hindari rate limit
+            time.sleep(1.5)
 
             result = get_pure_mp3_url(query)
 
@@ -91,7 +90,7 @@ class StreamHandler(BaseHTTPRequestHandler):
                     "format": "mp3"
                 })
             else:
-                self._json(404, {"error": result["message"], "query": query})
+                self._json(404, {"error": result["message"]})
             return
 
         self._json(404, {"error": "Gunakan /stream_pcm?song=..."})
@@ -107,7 +106,7 @@ class StreamHandler(BaseHTTPRequestHandler):
 
 def run(port: int = 8080):
     server = ThreadingHTTPServer(("0.0.0.0", port), StreamHandler)
-    logger.info("🎵 Pure MP3 Mono Server - Force audio only")
+    logger.info("🎵 Pure MP3 Mono Server - Optimized for your firmware")
     server.serve_forever()
 
 
