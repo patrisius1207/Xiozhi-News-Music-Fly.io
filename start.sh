@@ -1,5 +1,5 @@
 #!/bin/bash
-# Jalankan HTTP keepalive (biar Fly.io tidak matikan container)
+# Jalankan HTTP keepalive di port 8080 (dibutuhkan Fly.io)
 python -c "
 import http.server, threading
 class H(http.server.BaseHTTPRequestHandler):
@@ -13,6 +13,10 @@ t = threading.Thread(target=httpd.serve_forever, daemon=True)
 t.start()
 print('HTTP keepalive running on :8080')
 " &
+
+# Jalankan Audio Stream Server di port 2233
+# (meniru API server komunitas xiaozhi-esp32-music)
+python stream_server.py &
 
 # Jalankan MCP pipe (proses utama)
 python mcp_pipe.py

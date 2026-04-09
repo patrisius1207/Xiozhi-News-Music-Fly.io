@@ -1,22 +1,26 @@
-# fly.toml app configuration file generated for xiaozhi-mcp on 2026-04-09T09:33:34+07:00
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
+# fly.toml — Konfigurasi Fly.io untuk XiaoZhi MCP + Stream Server
 
-app = 'xiaozhi-mcp'
-primary_region = 'sin'
+app = "xiaozhi-mcp"
+primary_region = "sin"
 
 [build]
-  dockerfile = 'Dockerfile'
+  dockerfile = "Dockerfile"
 
 [http_service]
   internal_port = 8080
-  auto_stop_machines = 'off'
+  force_https   = false
+  auto_stop_machines  = false
   auto_start_machines = true
   min_machines_running = 1
 
+# Port 2233 untuk audio streaming ke ESP32
+[[services]]
+  protocol = "tcp"
+  internal_port = 2233
+
+  [[services.ports]]
+    port = 2233
+
 [[vm]]
-  memory = '256mb'
-  cpu_kind = 'shared'
-  cpus = 1
-  memory_mb = 256
+  memory = "512mb"   # naik dari 256mb karena yt-dlp + stream butuh lebih banyak RAM
+  cpus   = 1
