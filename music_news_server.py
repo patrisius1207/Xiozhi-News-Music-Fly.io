@@ -1,15 +1,15 @@
 # music_news_server.py
 # MCP Server Gabungan: Berita (Kompas/Antara) + Musik YouTube (yt-dlp)
-# Deploy ke Railway
+# Deploy ke Fly.io
 #
 # Tools:
-#   - get_latest_news   : ambil berita terbaru
-#   - play_youtube_music: cari & stream musik dari YouTube
+#   - get_latest_news    : ambil berita terbaru
+#   - search_music_url   : cari URL audio dari YouTube, kembalikan ke LLM
+#                          agar LLM teruskan ke self.music.play_song di ESP32
 
 from mcp.server.fastmcp import FastMCP
 import urllib.request
 import subprocess
-import json
 import re
 import logging
 
@@ -81,103 +81,74 @@ def get_latest_news(category: str = "nasional", jumlah: int = 5) -> dict:
 
 
 # ═══════════════════════════════════════════════════════
-#  TOOL 2 — MUSIK YOUTUBE
+#  TOOL 2 — CARI URL MUSIK DARI YOUTUBE
 # ═══════════════════════════════════════════════════════
 
-def search_youtube_audio_url(query: str) -> dict:
-    """Cari lagu di YouTube dan ambil URL audio stream-nya via yt-dlp."""
-    try:
-        # Cari video YouTube
-        search_cmd = [
-            "yt-dlp",
-            f"ytsearch1:{query}",   # ambil 1 hasil teratas
-            "--get-id",
-            "--get-title",
-            "--no-playlist",
-            "--quiet",
-        ]
-        result = subprocess.run(
-            search_cmd,
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        lines = result.stdout.strip().splitlines()
-        if len(lines) < 2:
-            return {"success": False, "error": "Lagu tidak ditemukan di YouTube"}
+@mcp.tool()
+def search_music_url(song_name: str) -> dict:
+    """
+    Cari lagu di YouTube dan kembalikan URL audio streamnya.
+    Gunakan tool ini saat pengguna minta putar lagu atau musik.
 
-        # yt-dlp --get-title --get-id output: title dulu, lalu id
-        title   = lines[0]
+    PENTING: Setelah mendapat URL dari tool ini, langsung panggil
+    tool self.music.play_song dengan URL tersebut untuk memutar musik
+    di speaker ESP32. Jangan tanya konfirmasi ke pengguna.
+
+    Parameter:
+    - song_name: nama lagu atau artis. Contoh: "Sheila On 7 Dan",
+                 "Bohemian Rhapsody", "lagu pop Indonesia terbaru"
+    """
+    logger.info(f"Mencari URL musik: {song_name}")
+
+    try:
+        # Step 1: Cari video ID dan judul
+        search_result = subprocess.run(
+            ["yt-dlp", f"ytsearch1:{song_name}", "--get-id", "--get-title",
+             "--no-playlist", "--quiet"],
+            capture_output=True, text=True, timeout=30
+        )
+        lines = search_result.stdout.strip().splitlines()
+        if len(lines) < 2:
+            return {"success": False, "result": "Lagu tidak ditemukan di YouTube."}
+
+        title    = lines[0]
         video_id = lines[1]
         video_url = f"https://www.youtube.com/watch?v={video_id}"
+        logger.info(f"Ditemukan: {title} ({video_id})")
 
-        # Ambil URL audio terbaik (format m4a/aac, langsung streamable)
-        audio_cmd = [
-            "yt-dlp",
-            video_url,
-            "--get-url",
-            "-f", "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
-            "--no-playlist",
-            "--quiet",
-        ]
+        # Step 2: Ambil direct URL audio — prioritas mp4a/m4a (kompatibel ESP32)
         audio_result = subprocess.run(
-            audio_cmd,
-            capture_output=True,
-            text=True,
-            timeout=30
+            ["yt-dlp", video_url,
+             "--get-url",
+             "-f", "140/bestaudio[ext=m4a]/bestaudio[acodec=mp4a]/bestaudio",
+             "--no-playlist", "--quiet"],
+            capture_output=True, text=True, timeout=30
         )
-        audio_url = audio_result.stdout.strip()
-        if not audio_url:
-            return {"success": False, "error": "Gagal mengambil URL audio"}
+        audio_url = audio_result.stdout.strip().splitlines()[0] if audio_result.stdout.strip() else ""
 
+        if not audio_url:
+            return {"success": False, "result": f"Gagal mengambil URL audio untuk '{title}'."}
+
+        logger.info(f"URL audio ditemukan, panjang: {len(audio_url)} chars")
+
+        # Kembalikan dalam format yang jelas untuk LLM
         return {
             "success":   True,
-            "title":     title,
-            "video_id":  video_id,
+            "song_title": title,
             "audio_url": audio_url,
+            "result": (
+                f"Lagu ditemukan: {title}\n"
+                f"Sekarang panggil self.music.play_song dengan url: {audio_url}"
+            )
         }
 
     except subprocess.TimeoutExpired:
-        return {"success": False, "error": "Timeout saat mencari lagu"}
+        return {"success": False, "result": "Timeout saat mencari lagu. Coba lagi."}
     except FileNotFoundError:
-        return {"success": False, "error": "yt-dlp tidak terinstall di server"}
+        return {"success": False, "result": "yt-dlp tidak tersedia di server."}
     except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
-@mcp.tool()
-def play_youtube_music(song_name: str) -> dict:
-    """
-    Cari dan putar musik dari YouTube di speaker ESP32.
-    Gunakan tool ini setiap kali pengguna meminta memutar lagu, musik, atau audio.
-    Tool ini akan mencari lagu di YouTube dan mengirimkan URL audio ke perangkat.
-
-    Parameter:
-    - song_name: nama lagu atau artis yang ingin diputar.
-      Contoh: "Bohemian Rhapsody Queen", "Sheila On 7 Dan", "lagu pop Indonesia terbaru"
-    """
-    logger.info(f"Mencari musik: {song_name}")
-
-    info = search_youtube_audio_url(song_name)
-    if not info["success"]:
-        return {
-            "success": False,
-            "result":  f"Maaf, tidak bisa memutar '{song_name}'. {info.get('error', '')}"
-        }
-
-    title     = info["title"]
-    audio_url = info["audio_url"]
-
-    logger.info(f"Ditemukan: {title}")
-
-    # Kembalikan URL audio ke firmware musik ESP32
-    # Firmware xiaozhi-esp32-music akan otomatis stream URL ini
-    return {
-        "success":   True,
-        "title":     title,
-        "url":       audio_url,
-        "result":    f"Memutar: {title}",
-    }
+        logger.error(f"Music error: {e}")
+        return {"success": False, "result": f"Error: {str(e)}"}
 
 
 if __name__ == "__main__":
