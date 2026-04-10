@@ -1,5 +1,5 @@
 # stream_server.py
-# SoundCloud Streaming - Versi Bersih (Tanpa Login)
+# SoundCloud → Direct MP3 (Bukan m3u8) - Fix untuk ESP32
 
 import subprocess
 import json
@@ -14,29 +14,31 @@ logging.basicConfig(
 logger = logging.getLogger("sc_stream")
 
 
-def get_soundcloud_url(query: str):
+def get_soundcloud_direct_mp3(query: str):
     try:
         logger.info(f"Mencari di SoundCloud: {query}")
 
         cmd = [
             "yt-dlp",
-            f"scsearch3:{query}",                    # SoundCloud search
+            f"scsearch3:{query}",
             "--quiet", "--no-warnings",
-            "-f", "bestaudio/best",
-            "-x", "--audio-format", "mp3",
-            "--postprocessor-args", "ffmpeg:-ac 1 -ar 22050 -b:a 64k",   # Mono 64kbps (paling ringan)
+            "-f", "bestaudio/best",                  # Ambil audio terbaik
+            "--extract-audio",
+            "--audio-format", "mp3",                 # Paksa konversi ke MP3
+            "--postprocessor-args", "ffmpeg:-ac 1 -ar 22050 -b:a 64k -vn",  # Mono, rendah, no video
             "--get-title",
             "--get-url",
             "--no-playlist",
-            "--force-ipv4"
+            "--force-ipv4",
+            "--prefer-ffmpeg"
         ]
 
-        result = subprocess.check_output(cmd, text=True, timeout=40).strip().splitlines()
+        result = subprocess.check_output(cmd, text=True, timeout=45).strip().splitlines()
 
         if len(result) >= 2:
             title = result[0].strip()
             direct_url = result[1].strip()
-            logger.info(f"✅ Ditemukan di SoundCloud: {title}")
+            logger.info(f"✅ Direct MP3 siap: {title}")
             return {
                 "status": "success",
                 "title": title,
@@ -45,12 +47,10 @@ def get_soundcloud_url(query: str):
                 "format": "mp3"
             }
 
-    except subprocess.TimeoutExpired:
-        logger.error("Timeout saat mencari di SoundCloud")
     except Exception as e:
         logger.error(f"Error SoundCloud: {str(e)[:300]}")
 
-    return {"status": "error", "message": "Lagu tidak ditemukan di SoundCloud"}
+    return {"status": "error", "message": "Gagal mendapatkan direct MP3 dari SoundCloud"}
 
 
 class StreamHandler(BaseHTTPRequestHandler):
@@ -62,11 +62,7 @@ class StreamHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path in ("/", "/health"):
-            self._json(200, {
-                "status": "ok", 
-                "source": "SoundCloud",
-                "note": "Tanpa login - MP3 mono 64kbps"
-            })
+            self._json(200, {"status": "ok", "source": "SoundCloud Direct MP3"})
             return
 
         if parsed.path == "/stream_pcm":
@@ -79,7 +75,7 @@ class StreamHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "song wajib"})
                 return
 
-            result = get_soundcloud_url(query)
+            result = get_soundcloud_direct_mp3(query)
 
             if result["status"] == "success":
                 self._json(200, {
@@ -105,7 +101,7 @@ class StreamHandler(BaseHTTPRequestHandler):
 
 def run(port: int = 8080):
     server = ThreadingHTTPServer(("0.0.0.0", port), StreamHandler)
-    logger.info("🎵 SoundCloud MP3 Mono Server - Tanpa Login (Versi Bersih)")
+    logger.info("🎵 SoundCloud Direct MP3 Server (Fix m3u8 issue)")
     server.serve_forever()
 
 
