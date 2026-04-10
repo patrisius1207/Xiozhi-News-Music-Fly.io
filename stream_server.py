@@ -1,5 +1,5 @@
 # stream_server.py
-# SoundCloud Streaming (Lebih Stabil untuk ESP32 - April 2026)
+# SoundCloud Streaming - Versi Bersih (Tanpa Login)
 
 import subprocess
 import json
@@ -13,7 +13,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("sc_stream")
 
-COOKIES_FILE = "/app/cookies.txt"   # Kosongkan atau hapus baris ini jika tidak pakai
 
 def get_soundcloud_url(query: str):
     try:
@@ -21,21 +20,16 @@ def get_soundcloud_url(query: str):
 
         cmd = [
             "yt-dlp",
-            f"scsearch3:{query}",                    # scsearch = SoundCloud search
+            f"scsearch3:{query}",                    # SoundCloud search
             "--quiet", "--no-warnings",
-            "-f", "bestaudio/best",                  # SoundCloud biasanya MP3 langsung
+            "-f", "bestaudio/best",
             "-x", "--audio-format", "mp3",
-            "--postprocessor-args", "ffmpeg:-ac 1 -ar 22050 -b:a 64k",  # Mono 64kbps (ringan untuk ESP32)
+            "--postprocessor-args", "ffmpeg:-ac 1 -ar 22050 -b:a 64k",   # Mono 64kbps (paling ringan)
             "--get-title",
             "--get-url",
             "--no-playlist",
             "--force-ipv4"
         ]
-
-        # Tambahkan cookies jika ada
-        if COOKIES_FILE and os.path.exists(COOKIES_FILE):
-            cmd.insert(3, "--cookies")
-            cmd.insert(4, COOKIES_FILE)
 
         result = subprocess.check_output(cmd, text=True, timeout=40).strip().splitlines()
 
@@ -51,10 +45,13 @@ def get_soundcloud_url(query: str):
                 "format": "mp3"
             }
 
+    except subprocess.TimeoutExpired:
+        logger.error("Timeout saat mencari di SoundCloud")
     except Exception as e:
         logger.error(f"Error SoundCloud: {str(e)[:300]}")
 
     return {"status": "error", "message": "Lagu tidak ditemukan di SoundCloud"}
+
 
 class StreamHandler(BaseHTTPRequestHandler):
 
@@ -65,7 +62,11 @@ class StreamHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path in ("/", "/health"):
-            self._json(200, {"status": "ok", "source": "SoundCloud", "format": "MP3 mono 64kbps"})
+            self._json(200, {
+                "status": "ok", 
+                "source": "SoundCloud",
+                "note": "Tanpa login - MP3 mono 64kbps"
+            })
             return
 
         if parsed.path == "/stream_pcm":
@@ -104,7 +105,7 @@ class StreamHandler(BaseHTTPRequestHandler):
 
 def run(port: int = 8080):
     server = ThreadingHTTPServer(("0.0.0.0", port), StreamHandler)
-    logger.info("🎵 SoundCloud MP3 Mono Server started (lebih stabil daripada YouTube)")
+    logger.info("🎵 SoundCloud MP3 Mono Server - Tanpa Login (Versi Bersih)")
     server.serve_forever()
 
 
