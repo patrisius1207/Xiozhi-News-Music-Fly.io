@@ -1,5 +1,5 @@
 # stream_server.py
-# YouTube Streaming dengan OAuth2 (Fix Bot Detection 2026)
+# YouTube Streaming dengan Cookies (Paling Stabil April 2026)
 
 import subprocess
 import json
@@ -14,34 +14,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger("yt_stream")
 
-def get_mp3_url_with_oauth(query: str):
+# Path ke file cookies (akan kita upload ke Fly.io)
+COOKIES_FILE = "/app/cookies.txt"   # Sesuaikan kalau perlu
+
+def get_mp3_url_with_cookies(query: str):
     try:
-        logger.info(f"Mencari dengan OAuth2: {query}")
+        logger.info(f"Mencari dengan cookies: {query}")
 
         cmd = [
             "yt-dlp",
             f"ytsearch3:{query}",
             "--quiet", "--no-warnings",
-            "--username", "oauth2",          # ← Kunci utama
-            "--password", "",                # password kosong
+            "--cookies", COOKIES_FILE,           # ← Ini yang penting
             "-f", "bestaudio/best",
             "-x", "--audio-format", "mp3",
             "--postprocessor-args", "ffmpeg:-ac 1 -ar 22050 -b:a 64k",  # Mono 64kbps
             "--get-title",
             "--get-url",
             "--no-playlist",
-            "--extractor-args", "youtube:player_client=web,android,ios",
+            "--extractor-args", "youtube:player_client=web,web_embedded,android",
             "--force-ipv4",
-            "--no-check-certificate",
-            "--sleep-interval", "2"
+            "--no-check-certificate"
         ]
 
-        result = subprocess.check_output(cmd, text=True, timeout=50).strip().splitlines()
+        result = subprocess.check_output(cmd, text=True, timeout=45).strip().splitlines()
 
         if len(result) >= 2:
             title = result[0].strip()
             direct_url = result[1].strip()
-            logger.info(f"✅ Sukses dengan OAuth2: {title}")
+            logger.info(f"✅ Sukses dengan cookies: {title}")
             return {
                 "status": "success",
                 "title": title,
@@ -52,9 +53,9 @@ def get_mp3_url_with_oauth(query: str):
     except subprocess.TimeoutExpired:
         logger.error("Timeout yt-dlp")
     except Exception as e:
-        logger.error(f"Error yt-dlp: {str(e)[:300]}")
+        logger.error(f"Error yt-dlp: {str(e)[:400]}")
 
-    return {"status": "error", "message": "Lagu tidak ditemukan atau diblokir sementara"}
+    return {"status": "error", "message": "Lagu tidak ditemukan (coba cookies baru)"}
 
 
 class StreamHandler(BaseHTTPRequestHandler):
@@ -66,7 +67,7 @@ class StreamHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path in ("/", "/health"):
-            self._json(200, {"status": "ok", "method": "OAuth2 + MP3 mono"})
+            self._json(200, {"status": "ok", "method": "Cookies + MP3 mono"})
             return
 
         if parsed.path == "/stream_pcm":
@@ -79,7 +80,7 @@ class StreamHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "song wajib"})
                 return
 
-            result = get_mp3_url_with_oauth(query)
+            result = get_mp3_url_with_cookies(query)
 
             if result["status"] == "success":
                 self._json(200, {
@@ -105,7 +106,7 @@ class StreamHandler(BaseHTTPRequestHandler):
 
 def run(port: int = 8080):
     server = ThreadingHTTPServer(("0.0.0.0", port), StreamHandler)
-    logger.info("🎵 YouTube MP3 Mono Server dengan OAuth2 (anti-bot 2026)")
+    logger.info("🎵 YouTube MP3 Server dengan Cookies (rekomendasi 2026)")
     server.serve_forever()
 
 
