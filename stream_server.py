@@ -1,5 +1,5 @@
 # stream_server.py
-# Fix Bot Detection 2026 + Pure Audio MP3 Mono 64kbps
+# YouTube Streaming dengan OAuth2 (Fix Bot Detection 2026)
 
 import subprocess
 import json
@@ -14,57 +14,47 @@ logging.basicConfig(
 )
 logger = logging.getLogger("yt_stream")
 
-def get_stable_mp3_url(query: str, max_retries=2):
-    for attempt in range(max_retries + 1):
-        try:
-            logger.info(f"Mencari (attempt {attempt+1}): {query}")
+def get_mp3_url_with_oauth(query: str):
+    try:
+        logger.info(f"Mencari dengan OAuth2: {query}")
 
-            cmd = [
-                "yt-dlp",
-                f"ytsearch3:{query}",
-                "--quiet", "--no-warnings",
-                "-f", "bestaudio/best",
-                "-x", "--audio-format", "mp3",
-                "--postprocessor-args", "ffmpeg:-ac 1 -ar 22050 -b:a 64k",   # Mono 64kbps - paling ringan
-                "--get-title",
-                "--get-url",
-                "--no-playlist",
-                "--extractor-args", "youtube:player_client=web_safari,web,android,ios",  # Anti-bot utama
-                "--force-ipv4",
-                "--no-check-certificate",
-                "--sleep-interval", "1"   # Hindari rate limit
-            ]
+        cmd = [
+            "yt-dlp",
+            f"ytsearch3:{query}",
+            "--quiet", "--no-warnings",
+            "--username", "oauth2",          # ← Kunci utama
+            "--password", "",                # password kosong
+            "-f", "bestaudio/best",
+            "-x", "--audio-format", "mp3",
+            "--postprocessor-args", "ffmpeg:-ac 1 -ar 22050 -b:a 64k",  # Mono 64kbps
+            "--get-title",
+            "--get-url",
+            "--no-playlist",
+            "--extractor-args", "youtube:player_client=web,android,ios",
+            "--force-ipv4",
+            "--no-check-certificate",
+            "--sleep-interval", "2"
+        ]
 
-            result = subprocess.check_output(cmd, text=True, timeout=45).strip().splitlines()
+        result = subprocess.check_output(cmd, text=True, timeout=50).strip().splitlines()
 
-            if len(result) >= 2:
-                title = result[0].strip()
-                direct_url = result[1].strip()
-                logger.info(f"✅ Berhasil: {title} (Pure MP3 mono)")
-                return {
-                    "status": "success",
-                    "title": title,
-                    "audio_url": direct_url,
-                    "format": "mp3_mono_64kbps"
-                }
+        if len(result) >= 2:
+            title = result[0].strip()
+            direct_url = result[1].strip()
+            logger.info(f"✅ Sukses dengan OAuth2: {title}")
+            return {
+                "status": "success",
+                "title": title,
+                "audio_url": direct_url,
+                "format": "mp3_mono_64kbps"
+            }
 
-        except subprocess.TimeoutExpired:
-            logger.warning(f"Timeout pada attempt {attempt+1}")
-        except subprocess.CalledProcessError as e:
-            stderr = e.stderr or str(e)
-            if "Sign in to confirm you're not a bot" in stderr:
-                logger.warning("YouTube bot detection terdeteksi. Mencoba lagi...")
-                time.sleep(2)  # delay kecil
-                continue
-            else:
-                logger.error(f"yt-dlp error: {stderr[:300]}")
-        except Exception as e:
-            logger.error(f"Error umum: {e}")
+    except subprocess.TimeoutExpired:
+        logger.error("Timeout yt-dlp")
+    except Exception as e:
+        logger.error(f"Error yt-dlp: {str(e)[:300]}")
 
-        if attempt < max_retries:
-            time.sleep(1.5)
-
-    return {"status": "error", "message": "Lagu tidak ditemukan atau diblokir YouTube"}
+    return {"status": "error", "message": "Lagu tidak ditemukan atau diblokir sementara"}
 
 
 class StreamHandler(BaseHTTPRequestHandler):
@@ -76,7 +66,7 @@ class StreamHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path in ("/", "/health"):
-            self._json(200, {"status": "ok", "format": "MP3 mono 64kbps - anti bot"})
+            self._json(200, {"status": "ok", "method": "OAuth2 + MP3 mono"})
             return
 
         if parsed.path == "/stream_pcm":
@@ -89,7 +79,7 @@ class StreamHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "song wajib"})
                 return
 
-            result = get_stable_mp3_url(query)
+            result = get_mp3_url_with_oauth(query)
 
             if result["status"] == "success":
                 self._json(200, {
@@ -115,7 +105,7 @@ class StreamHandler(BaseHTTPRequestHandler):
 
 def run(port: int = 8080):
     server = ThreadingHTTPServer(("0.0.0.0", port), StreamHandler)
-    logger.info("🎵 Server MP3 Mono 64kbps dengan anti-bot (web_safari)")
+    logger.info("🎵 YouTube MP3 Mono Server dengan OAuth2 (anti-bot 2026)")
     server.serve_forever()
 
 
