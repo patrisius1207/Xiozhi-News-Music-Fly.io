@@ -12,6 +12,7 @@ import urllib.request
 import subprocess
 import re
 import logging
+import httpx
 
 logger = logging.getLogger("xiaozhi_mcp")
 mcp = FastMCP("XiaoZhiTools")
@@ -81,75 +82,62 @@ def get_latest_news(category: str = "nasional", jumlah: int = 5) -> dict:
 
 
 # ═══════════════════════════════════════════════════════
-#  TOOL 2 — CARI URL MUSIK DARI YOUTUBE
+#  TOOL 2 — CARI URL MUSIK DARI SOUNDCLOUD (REKOMENDASI)
 # ═══════════════════════════════════════════════════════
 
+
 @mcp.tool()
-def search_music_url(song_name: str) -> dict:
+async def search_music_url(song_name: str) -> dict:
     """
-    Cari lagu di YouTube dan kembalikan URL audio streamnya.
-    Gunakan tool ini saat pengguna minta putar lagu atau musik.
-
-    PENTING: Setelah mendapat URL dari tool ini, langsung panggil
-    tool self.music.play_song dengan URL tersebut untuk memutar musik
-    di speaker ESP32. Jangan tanya konfirmasi ke pengguna.
-
+    Cari lagu di SoundCloud dan kembalikan URL audio stream langsung.
+    Tool ini akan memanggil stream_server.py yang sudah diubah ke SoundCloud.
+    
     Parameter:
-    - song_name: nama lagu atau artis. Contoh: "Sheila On 7 Dan",
-                 "Bohemian Rhapsody", "lagu pop Indonesia terbaru"
+    - song_name: nama lagu + artis (contoh: "Bintang di Surga Noah", "Ngga Dulu Akbar Chalay")
     """
-    logger.info(f"Mencari URL musik: {song_name}")
+    logger.info(f"Mencari URL musik di SoundCloud: {song_name}")
 
     try:
-        # Step 1: Cari video ID dan judul
-        search_result = subprocess.run(
-            ["yt-dlp", f"ytsearch1:{song_name}", "--get-id", "--get-title",
-             "--no-playlist", "--quiet"],
-            capture_output=True, text=True, timeout=30
-        )
-        lines = search_result.stdout.strip().splitlines()
-        if len(lines) < 2:
-            return {"success": False, "result": "Lagu tidak ditemukan di YouTube."}
-
-        title    = lines[0]
-        video_id = lines[1]
-        video_url = f"https://www.youtube.com/watch?v={video_id}"
-        logger.info(f"Ditemukan: {title} ({video_id})")
-
-        # Step 2: Ambil direct URL audio — prioritas mp4a/m4a (kompatibel ESP32)
-        audio_result = subprocess.run(
-            ["yt-dlp", video_url,
-             "--get-url",
-             "-f", "140/bestaudio[ext=m4a]/bestaudio[acodec=mp4a]/bestaudio",
-             "--no-playlist", "--quiet"],
-            capture_output=True, text=True, timeout=60
-        )
-        audio_url = audio_result.stdout.strip().splitlines()[0] if audio_result.stdout.strip() else ""
-
-        if not audio_url:
-            return {"success": False, "result": f"Gagal mengambil URL audio untuk '{title}'."}
-
-        logger.info(f"URL audio ditemukan, panjang: {len(audio_url)} chars")
-
-        # Kembalikan dalam format yang jelas untuk LLM
-        return {
-            "success":   True,
-            "song_title": title,
-            "audio_url": audio_url,
-            "result": (
-                f"Lagu ditemukan: {title}\n"
-                f"Sekarang panggil self.music.play_song dengan url: {audio_url}"
+        # Panggil stream_server.py yang berjalan di port 8080
+        async with httpx.AsyncClient(timeout=50.0) as client:
+            response = await client.get(
+                "http://127.0.0.1:8080/stream_pcm",   # Panggil lokal di Fly.io
+                params={"song": song_name, "artist": ""}
             )
+
+            if response.status_code == 200:
+                data = response.json()
+                
+                if data.get("status") == "success":
+                    logger.info(f"✅ Berhasil mendapatkan audio dari SoundCloud: {data.get('title')}")
+                    return {
+                        "success": True,
+                        "song_title": data.get("title"),
+                        "audio_url": data.get("audio_url"),
+                        "source": "soundcloud",
+                        "result": f"Lagu ditemukan: {data.get('title')}\nSiap diputar di ESP32."
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "result": data.get("error", "Lagu tidak ditemukan di SoundCloud.")
+                    }
+            else:
+                logger.error(f"Stream server returned status: {response.status_code}")
+                return {
+                    "success": False,
+                    "result": f"Music server error (status {response.status_code})"
+                }
+
+    except httpx.RequestError as e:
+        logger.error(f"Connection error to stream_server: {e}")
+        return {
+            "success": False,
+            "result": "Music streaming service sedang tidak tersedia. Coba lagi nanti."
         }
-
-    except subprocess.TimeoutExpired:
-        return {"success": False, "result": "Timeout saat mencari lagu. Coba lagi."}
-    except FileNotFoundError:
-        return {"success": False, "result": "yt-dlp tidak tersedia di server."}
     except Exception as e:
-        logger.error(f"Music error: {e}")
-        return {"success": False, "result": f"Error: {str(e)}"}
-
-
-if __name__ == "__main__":
-    mcp.run(transport="stdio")
+        logger.error(f"Unexpected error in search_music_url: {e}")
+        return {
+            "success": False,
+            "result": f"Terjadi kesalahan saat mencari lagu: {str(e)}"
+        }
