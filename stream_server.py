@@ -3,14 +3,29 @@
 import subprocess
 import json
 import logging
+import re
+import requests
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - WW-MUSIC - %(levelname)s - %(message)s'
+    format='%(asctime)s - Xiozhi-Music - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger("ww_music")
+logger = logging.getLogger("xiozhi_music")
+
+
+def clean_title(title: str) -> str:
+    """Bersihkan title dari noise seperti [abc123].mp3 atau filename mentah"""
+    # Hapus ekstensi file di akhir
+    title = re.sub(r'\.(mp3|m4a|flac|wav|ogg)$', '', title, flags=re.IGNORECASE)
+    # Hapus YouTube/SoundCloud ID dalam kurung kotak: [a1xZrLE73Uc]
+    title = re.sub(r'\[[a-zA-Z0-9_-]{6,}\]', '', title)
+    # Hapus kurung kosong yang tersisa
+    title = re.sub(r'\[\s*\]|\(\s*\)', '', title)
+    # Rapikan spasi berlebih
+    title = ' '.join(title.split())
+    return title.strip()
 
 
 def search_soundcloud(query: str):
@@ -27,7 +42,7 @@ def search_soundcloud(query: str):
         ]
         result = subprocess.check_output(cmd, text=True, timeout=25).strip().splitlines()
         if len(result) >= 2:
-            return {"title": result[0].strip(), "audio_url": result[1].strip(), "source": "soundcloud"}
+            return {"title": clean_title(result[0].strip()), "audio_url": result[1].strip(), "source": "soundcloud"}
     except Exception as e:
         logger.warning(f"SoundCloud failed: {e}")
     return None
@@ -48,7 +63,7 @@ def search_youtube(query: str):
         ]
         result = subprocess.check_output(cmd, text=True, timeout=25).strip().splitlines()
         if len(result) >= 2:
-            return {"title": result[0].strip(), "audio_url": result[1].strip(), "source": "youtube"}
+            return {"title": clean_title(result[0].strip()), "audio_url": result[1].strip(), "source": "youtube"}
     except Exception as e:
         logger.warning(f"YouTube failed: {e}")
     return None
@@ -82,7 +97,7 @@ class StreamHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path in ("/", "/health"):
-            self._json(200, {"status": "ok", "server": "WW Music - SoundCloud (Utama) + YouTube (Fallback)"})
+            self._json(200, {"status": "ok", "server": "Xiozhi Music - SoundCloud (Utama) + YouTube (Fallback)"})
             return
 
         if parsed.path == "/stream_pcm":
@@ -100,12 +115,45 @@ class StreamHandler(BaseHTTPRequestHandler):
             if "error" in result:
                 self._json(200, {"status": "error", "message": result["error"]})
             else:
+                # Buat proxy URL agar ESP32 tidak akses SoundCloud/YouTube langsung
+                import urllib.parse
+                encoded = urllib.parse.quote(result["audio_url"], safe="")
+                host = self.headers.get("Host", "localhost")
+                proxy_url = f"http://{host}/proxy?url={encoded}"
                 self._json(200, {
                     "title": result["title"],
-                    "audio_url": result["audio_url"],
+                    "audio_url": proxy_url,
                     "source": result.get("source", "soundcloud"),
-                    "format": "m4a"
+                    "format": "mp3"
                 })
+            return
+
+        if parsed.path == "/proxy":
+            params = parse_qs(parsed.query)
+            target_url = params.get("url", [""])[0].strip()
+            if not target_url:
+                self._json(400, {"error": "url wajib"})
+                return
+            try:
+                headers = {
+                    "User-Agent": "Mozilla/5.0",
+                    "Range": self.headers.get("Range", "bytes=0-")
+                }
+                r = requests.get(target_url, headers=headers, stream=True, timeout=20)
+                self.send_response(r.status_code)
+                self.send_header("Content-Type", r.headers.get("Content-Type", "audio/mpeg"))
+                if "Content-Length" in r.headers:
+                    self.send_header("Content-Length", r.headers["Content-Length"])
+                if "Content-Range" in r.headers:
+                    self.send_header("Content-Range", r.headers["Content-Range"])
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        self.wfile.write(chunk)
+            except Exception as e:
+                logger.error(f"Proxy error: {e}")
+                self._json(502, {"error": "Gagal proxy audio"})
             return
 
         self._json(404, {"error": "Not found"})
@@ -121,7 +169,7 @@ class StreamHandler(BaseHTTPRequestHandler):
 
 def run(port: int = 8080):
     server = ThreadingHTTPServer(("0.0.0.0", port), StreamHandler)
-    logger.info("🎵 WW Music Server started - SoundCloud (Utama) + YouTube (Fallback)")
+    logger.info("🎵 Xiozhi Music Server started - SoundCloud (Utama) + YouTube (Fallback)")
     server.serve_forever()
 
 
