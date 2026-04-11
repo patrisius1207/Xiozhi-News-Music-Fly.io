@@ -135,52 +135,51 @@ class StreamHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "url wajib"})
                 return
             try:
+                import tempfile, os
                 is_hls = ".m3u8" in target_url or "playlist" in target_url
 
                 if is_hls:
-                    # Convert HLS → MP3 via ffmpeg, stream langsung ke ESP32
+                    # Convert HLS → MP3 ke file temp dulu, baru kirim
+                    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+                        tmp_path = tmp.name
+
                     cmd = [
                         "ffmpeg", "-y",
                         "-i", target_url,
-                        "-vn",                    # skip video
-                        "-ar", "44100",           # sample rate
-                        "-ac", "1",               # mono (hemat RAM ESP32)
-                        "-b:a", "64k",            # bitrate ringan untuk ESP32
-                        "-f", "mp3",              # output format MP3
-                        "pipe:1"                  # output ke stdout
+                        "-vn",
+                        "-ar", "44100",
+                        "-ac", "1",
+                        "-b:a", "64k",
+                        "-f", "mp3",
+                        tmp_path
                     ]
+                    ret = subprocess.run(cmd, timeout=60, stderr=subprocess.DEVNULL)
+
+                    if ret.returncode != 0 or not os.path.exists(tmp_path):
+                        self._json(502, {"error": "ffmpeg gagal convert audio"})
+                        return
+
+                    file_size = os.path.getsize(tmp_path)
                     self.send_response(200)
                     self.send_header("Content-Type", "audio/mpeg")
-                    self.send_header("Transfer-Encoding", "chunked")
+                    self.send_header("Content-Length", str(file_size))
+                    self.send_header("Accept-Ranges", "bytes")
                     self.end_headers()
-                    proc = subprocess.Popen(
-                        cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.DEVNULL
-                    )
-                    try:
+                    with open(tmp_path, "rb") as f:
                         while True:
-                            chunk = proc.stdout.read(4096)
+                            chunk = f.read(8192)
                             if not chunk:
                                 break
                             self.wfile.write(chunk)
-                    except Exception:
-                        pass
-                    finally:
-                        proc.kill()
+                    os.unlink(tmp_path)
                 else:
                     # Direct audio URL — proxy biasa
-                    headers = {
-                        "User-Agent": "Mozilla/5.0",
-                        "Range": self.headers.get("Range", "bytes=0-")
-                    }
+                    headers = {"User-Agent": "Mozilla/5.0"}
                     r = requests.get(target_url, headers=headers, stream=True, timeout=20)
                     self.send_response(r.status_code)
                     self.send_header("Content-Type", r.headers.get("Content-Type", "audio/mpeg"))
                     if "Content-Length" in r.headers:
                         self.send_header("Content-Length", r.headers["Content-Length"])
-                    if "Content-Range" in r.headers:
-                        self.send_header("Content-Range", r.headers["Content-Range"])
                     self.send_header("Accept-Ranges", "bytes")
                     self.end_headers()
                     for chunk in r.iter_content(chunk_size=8192):
