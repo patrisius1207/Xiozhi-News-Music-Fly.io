@@ -135,22 +135,57 @@ class StreamHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "url wajib"})
                 return
             try:
-                headers = {
-                    "User-Agent": "Mozilla/5.0",
-                    "Range": self.headers.get("Range", "bytes=0-")
-                }
-                r = requests.get(target_url, headers=headers, stream=True, timeout=20)
-                self.send_response(r.status_code)
-                self.send_header("Content-Type", r.headers.get("Content-Type", "audio/mpeg"))
-                if "Content-Length" in r.headers:
-                    self.send_header("Content-Length", r.headers["Content-Length"])
-                if "Content-Range" in r.headers:
-                    self.send_header("Content-Range", r.headers["Content-Range"])
-                self.send_header("Accept-Ranges", "bytes")
-                self.end_headers()
-                for chunk in r.iter_content(chunk_size=8192):
-                    if chunk:
-                        self.wfile.write(chunk)
+                is_hls = ".m3u8" in target_url or "playlist" in target_url
+
+                if is_hls:
+                    # Convert HLS → MP3 via ffmpeg, stream langsung ke ESP32
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-i", target_url,
+                        "-vn",                    # skip video
+                        "-ar", "44100",           # sample rate
+                        "-ac", "1",               # mono (hemat RAM ESP32)
+                        "-b:a", "64k",            # bitrate ringan untuk ESP32
+                        "-f", "mp3",              # output format MP3
+                        "pipe:1"                  # output ke stdout
+                    ]
+                    self.send_response(200)
+                    self.send_header("Content-Type", "audio/mpeg")
+                    self.send_header("Transfer-Encoding", "chunked")
+                    self.end_headers()
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL
+                    )
+                    try:
+                        while True:
+                            chunk = proc.stdout.read(4096)
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                    except Exception:
+                        pass
+                    finally:
+                        proc.kill()
+                else:
+                    # Direct audio URL — proxy biasa
+                    headers = {
+                        "User-Agent": "Mozilla/5.0",
+                        "Range": self.headers.get("Range", "bytes=0-")
+                    }
+                    r = requests.get(target_url, headers=headers, stream=True, timeout=20)
+                    self.send_response(r.status_code)
+                    self.send_header("Content-Type", r.headers.get("Content-Type", "audio/mpeg"))
+                    if "Content-Length" in r.headers:
+                        self.send_header("Content-Length", r.headers["Content-Length"])
+                    if "Content-Range" in r.headers:
+                        self.send_header("Content-Range", r.headers["Content-Range"])
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.end_headers()
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if chunk:
+                            self.wfile.write(chunk)
             except Exception as e:
                 logger.error(f"Proxy error: {e}")
                 self._json(502, {"error": "Gagal proxy audio"})
