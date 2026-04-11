@@ -119,9 +119,10 @@ class StreamHandler(BaseHTTPRequestHandler):
             else:
                 # Buat proxy URL agar ESP32 tidak akses SoundCloud/YouTube langsung
                 import urllib.parse
-                encoded = urllib.parse.quote(result["audio_url"], safe="")
+                encoded_url = urllib.parse.quote(result["audio_url"], safe="")
+                encoded_song = urllib.parse.quote(result["title"], safe="")
                 host = self.headers.get("Host", "localhost")
-                proxy_url = f"http://{host}/proxy?url={encoded}"
+                proxy_url = f"http://{host}/proxy?song={encoded_song}&url={encoded_url}"
                 self._json(200, {
                     "title": result["title"],
                     "audio_url": proxy_url,
@@ -133,40 +134,71 @@ class StreamHandler(BaseHTTPRequestHandler):
         if parsed.path == "/proxy":
             params = parse_qs(parsed.query)
             target_url = params.get("url", [""])[0].strip()
-            if not target_url:
-                self._json(400, {"error": "url wajib"})
+            song = params.get("song", [""])[0].strip()
+
+            if not target_url and not song:
+                self._json(400, {"error": "url atau song wajib"})
                 return
             try:
                 is_hls = ".m3u8" in target_url or "playlist" in target_url
 
-                if is_hls:
-                    # Convert HLS → MP3 ke file temp dulu, baru kirim
+                if is_hls or song:
+                    # Untuk HLS atau jika ada param song: download ulang fresh via yt-dlp + ffmpeg
+                    # Ini menghindari URL expire masalah
+                    query = song if song else target_url
+                    logger.info(f"Proxy: download fresh untuk: {query[:60]}")
+
                     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
                         tmp_path = tmp.name
 
+                    # Gunakan yt-dlp langsung download + convert ke mp3
                     cmd = [
-                        "ffmpeg", "-y",
-                        "-i", target_url,
-                        "-vn",
-                        "-ar", "44100",
-                        "-ac", "1",
-                        "-b:a", "64k",
-                        "-f", "mp3",
-                        tmp_path
+                        "yt-dlp",
+                        f"scsearch1:{query}" if song else target_url,
+                        "--quiet", "--no-warnings",
+                        "-f", "bestaudio/best",
+                        "--no-playlist",
+                        "--force-ipv4",
+                        "--socket-timeout", "15",
+                        "-o", tmp_path.replace(".mp3", ".%(ext)s"),
+                        "--extract-audio",
+                        "--audio-format", "mp3",
+                        "--audio-quality", "64K",
+                        "--postprocessor-args", "-ar 44100 -ac 1"
                     ]
-                    ret = subprocess.run(cmd, timeout=60, stderr=subprocess.DEVNULL)
 
-                    if ret.returncode != 0 or not os.path.exists(tmp_path):
-                        self._json(502, {"error": "ffmpeg gagal convert audio"})
+                    # Cari file hasil download (bisa .mp3 langsung)
+                    ret = subprocess.run(cmd, timeout=90, stderr=subprocess.DEVNULL)
+
+                    # yt-dlp mungkin simpan dengan nama berbeda, cari file yang ada
+                    import glob
+                    base = tmp_path.replace(".mp3", "")
+                    candidates = glob.glob(base + ".*")
+                    actual_path = candidates[0] if candidates else tmp_path
+
+                    # Jika bukan mp3, convert dengan ffmpeg
+                    if not actual_path.endswith(".mp3"):
+                        mp3_path = base + ".mp3"
+                        subprocess.run(
+                            ["ffmpeg", "-y", "-i", actual_path, "-vn",
+                             "-ar", "44100", "-ac", "1", "-b:a", "64k",
+                             "-f", "mp3", mp3_path],
+                            timeout=60, stderr=subprocess.DEVNULL
+                        )
+                        os.unlink(actual_path)
+                        actual_path = mp3_path
+
+                    if not os.path.exists(actual_path) or os.path.getsize(actual_path) == 0:
+                        self._json(502, {"error": "Gagal download audio"})
                         return
 
-                    file_size = os.path.getsize(tmp_path)
+                    file_size = os.path.getsize(actual_path)
                     self.send_response(200)
                     self.send_header("Content-Type", "audio/mpeg")
                     self.send_header("Content-Length", str(file_size))
                     self.send_header("Accept-Ranges", "bytes")
                     self.end_headers()
-                    with open(tmp_path, "rb") as f:
+                    with open(actual_path, "rb") as f:
                         while True:
                             chunk = f.read(8192)
                             if not chunk:
@@ -175,9 +207,10 @@ class StreamHandler(BaseHTTPRequestHandler):
                                 self.wfile.write(chunk)
                             except BrokenPipeError:
                                 break
-                    os.unlink(tmp_path)
+                    os.unlink(actual_path)
+
                 else:
-                    # Direct audio URL — download ke temp dulu, baru kirim
+                    # Direct MP3 URL — download ke temp dulu, baru kirim
                     headers = {"User-Agent": "Mozilla/5.0"}
                     r = requests.get(target_url, headers=headers, timeout=30)
                     r.raise_for_status()
@@ -202,9 +235,13 @@ class StreamHandler(BaseHTTPRequestHandler):
                             except BrokenPipeError:
                                 break
                     os.unlink(tmp_path)
+
             except Exception as e:
                 logger.error(f"Proxy error: {e}")
-                self._json(502, {"error": "Gagal proxy audio"})
+                try:
+                    self._json(502, {"error": "Gagal proxy audio"})
+                except Exception:
+                    pass
             return
 
         self._json(404, {"error": "Not found"})
