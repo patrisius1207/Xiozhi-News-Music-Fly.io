@@ -4,6 +4,8 @@ import subprocess
 import json
 import logging
 import re
+import os
+import tempfile
 import requests
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
@@ -135,7 +137,6 @@ class StreamHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "url wajib"})
                 return
             try:
-                import tempfile, os
                 is_hls = ".m3u8" in target_url or "playlist" in target_url
 
                 if is_hls:
@@ -170,21 +171,37 @@ class StreamHandler(BaseHTTPRequestHandler):
                             chunk = f.read(8192)
                             if not chunk:
                                 break
-                            self.wfile.write(chunk)
+                            try:
+                                self.wfile.write(chunk)
+                            except BrokenPipeError:
+                                break
                     os.unlink(tmp_path)
                 else:
-                    # Direct audio URL — proxy biasa
+                    # Direct audio URL — download ke temp dulu, baru kirim
                     headers = {"User-Agent": "Mozilla/5.0"}
-                    r = requests.get(target_url, headers=headers, stream=True, timeout=20)
-                    self.send_response(r.status_code)
-                    self.send_header("Content-Type", r.headers.get("Content-Type", "audio/mpeg"))
-                    if "Content-Length" in r.headers:
-                        self.send_header("Content-Length", r.headers["Content-Length"])
+                    r = requests.get(target_url, headers=headers, timeout=30)
+                    r.raise_for_status()
+
+                    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+                        tmp.write(r.content)
+                        tmp_path = tmp.name
+
+                    file_size = os.path.getsize(tmp_path)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "audio/mpeg")
+                    self.send_header("Content-Length", str(file_size))
                     self.send_header("Accept-Ranges", "bytes")
                     self.end_headers()
-                    for chunk in r.iter_content(chunk_size=8192):
-                        if chunk:
-                            self.wfile.write(chunk)
+                    with open(tmp_path, "rb") as f:
+                        while True:
+                            chunk = f.read(8192)
+                            if not chunk:
+                                break
+                            try:
+                                self.wfile.write(chunk)
+                            except BrokenPipeError:
+                                break
+                    os.unlink(tmp_path)
             except Exception as e:
                 logger.error(f"Proxy error: {e}")
                 self._json(502, {"error": "Gagal proxy audio"})
