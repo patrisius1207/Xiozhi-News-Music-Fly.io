@@ -1,5 +1,5 @@
 # music_news_server.py
-# MCP Server Gabungan: Berita Google News + Musik YouTube (Anti-Crash)
+# MCP Server Gabungan: Berita Google News + Musik SoundCloud (Anti-Crash)
 
 from mcp.server.fastmcp import FastMCP
 import urllib.request
@@ -9,24 +9,25 @@ import httpx
 from datetime import datetime
 
 logger = logging.getLogger("xiaozhi_mcp")
+
 mcp = FastMCP("XiaoZhiTools")
 
 # ═══════════════════════════════════════════════════════
-#  TOOL 1 — BERITA GOOGLE NEWS (Baru!)
+# TOOL 1 — BERITA GOOGLE NEWS
 # ═══════════════════════════════════════════════════════
 
-# Google News RSS untuk Indonesia (hl=id-ID, gl=ID, ceid=ID:id)
 GOOGLE_NEWS_BASE = "https://news.google.com/rss"
 
 CATEGORIES = {
-    "terkini":     f"{GOOGLE_NEWS_BASE}?hl=id-ID&gl=ID&ceid=ID:id",           # Top stories Indonesia
-    "nasional":    f"{GOOGLE_NEWS_BASE}/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx1YlRZU0FtVnVHZ0pWVXlnQVAB?hl=id-ID&gl=ID&ceid=ID:id",  # Indonesia
-    "dunia":       f"{GOOGLE_NEWS_BASE}/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVdZU0FtVnVHZ0pWVXlnQVAB?hl=id-ID&gl=ID&ceid=ID:id", # Dunia
-    "bisnis":      f"{GOOGLE_NEWS_BASE}/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVdZU0FtVnVHZ0pWVXlnQVAB?hl=id-ID&gl=ID&ceid=ID:id", # Ekonomi/Bisnis
-    "teknologi":   f"{GOOGLE_NEWS_BASE}/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGRqTVhZU0FtVnVHZ0pWVXlnQVAB?hl=id-ID&gl=ID&ceid=ID:id", # Teknologi
-    "olahraga":    f"{GOOGLE_NEWS_BASE}/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFp1ZEdZU0FtVnVHZ0pWVXlnQVAB?hl=id-ID&gl=ID&ceid=ID:id", # Olahraga
-    "hiburan":     f"{GOOGLE_NEWS_BASE}/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFp0Y1RZU0FtVnVHZ0pWVXlnQVAB?hl=id-ID&gl=ID&ceid=ID:id", # Hiburan
+    "terkini":   f"{GOOGLE_NEWS_BASE}?hl=id-ID&gl=ID&ceid=ID:id",
+    "nasional":  f"{GOOGLE_NEWS_BASE}/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx1YlRZU0FtVnVHZ0pWVXlnQVAB?hl=id-ID&gl=ID&ceid=ID:id",
+    "dunia":     f"{GOOGLE_NEWS_BASE}/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVdZU0FtVnVHZ0pWVXlnQVAB?hl=id-ID&gl=ID&ceid=ID:id",
+    "bisnis":    f"{GOOGLE_NEWS_BASE}/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVdZU0FtVnVHZ0pWVXlnQVAB?hl=id-ID&gl=ID&ceid=ID:id",
+    "teknologi": f"{GOOGLE_NEWS_BASE}/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGRqTVhZU0FtVnVHZ0pWVXlnQVAB?hl=id-ID&gl=ID&ceid=ID:id",
+    "olahraga":  f"{GOOGLE_NEWS_BASE}/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFp1ZEdZU0FtVnVHZ0pWVXlnQVAB?hl=id-ID&gl=ID&ceid=ID:id",
+    "hiburan":   f"{GOOGLE_NEWS_BASE}/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFp0Y1RZU0FtVnVHZ0pWVXlnQVAB?hl=id-ID&gl=ID&ceid=ID:id",
 }
+
 
 def fetch_rss(url: str) -> str:
     try:
@@ -37,6 +38,7 @@ def fetch_rss(url: str) -> str:
         logger.error(f"Fetch Google News RSS error: {e}")
         return ""
 
+
 def parse_google_news(xml: str, max_items: int = 6) -> list:
     items = []
     for block in re.findall(r"<item>(.*?)</item>", xml, re.DOTALL):
@@ -45,7 +47,6 @@ def parse_google_news(xml: str, max_items: int = 6) -> list:
         title = re.search(r"<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>", block, re.DOTALL)
         desc = re.search(r"<description>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</description>", block, re.DOTALL)
         source = re.search(r"<source>(.*?)</source>", block)
-        
         if title:
             desc_text = ""
             if desc:
@@ -58,6 +59,7 @@ def parse_google_news(xml: str, max_items: int = 6) -> list:
             })
     return items
 
+
 @mcp.tool()
 def get_latest_news(category: str = "terkini", jumlah: int = 5) -> dict:
     """
@@ -67,48 +69,42 @@ def get_latest_news(category: str = "terkini", jumlah: int = 5) -> dict:
     cat = category.lower().strip()
     if cat not in CATEGORIES:
         cat = "terkini"
-    
     count = max(1, min(int(jumlah), 8))
-    
     try:
         logger.info(f"[GOOGLE NEWS] Mengambil berita kategori: {cat}")
-        url = CATEGORIES[cat]
-        xml = fetch_rss(url)
-        
+        xml = fetch_rss(CATEGORIES[cat])
         if not xml:
             return {"success": False, "result": "Gagal mengambil berita dari Google News. Coba lagi nanti."}
-        
         items = parse_google_news(xml, count)
-        
         if not items:
             return {"success": False, "result": "Tidak ada berita ditemukan untuk kategori ini."}
-        
         lines = [f"📰 Berita {cat.upper()} terbaru dari Google News ({datetime.now().strftime('%d %B %Y')}) :"]
-        
         for i, item in enumerate(items, 1):
             lines.append(f"\n{i}. {item['title']}")
             if item["description"]:
                 lines.append(f"   {item['description']}")
             lines.append(f"   Sumber: {item['source']}")
-        
         return {"success": True, "result": "\n".join(lines)}
-        
     except Exception as e:
         logger.error(f"[GOOGLE NEWS] Error: {e}")
         return {"success": False, "result": "Maaf, saat ini sedang ada masalah saat mengambil berita dari Google News."}
 
 
 # ═══════════════════════════════════════════════════════
-#  TOOL 2 — MUSIK (Anti-Crash)
+# TOOL 2 — MUSIK via SoundCloud (Anti-Crash)
 # ═══════════════════════════════════════════════════════
+
+SOURCE_LABELS = {
+    "soundcloud": "SoundCloud",
+    "youtube": "YouTube",
+}
 
 @mcp.tool()
 async def search_music_url(song_name: str) -> dict:
     """
-    Cari lagu di YouTube via stream_server.py
+    Cari lagu di SoundCloud (utama) atau YouTube (fallback) via stream_server.py
     """
     logger.info(f"[MUSIC] Mencari lagu: {song_name}")
-
     try:
         async with httpx.AsyncClient(timeout=50.0) as client:
             response = await client.get(
@@ -116,28 +112,27 @@ async def search_music_url(song_name: str) -> dict:
                 params={"song": song_name, "artist": ""},
                 timeout=50.0
             )
-
             if response.status_code == 200:
                 data = response.json()
                 if data.get("audio_url") or data.get("status") == "success":
                     title = data.get("title", song_name)
                     audio_url = data.get("audio_url")
-                    logger.info(f"[MUSIC] ✅ Ditemukan: {title}")
+                    source = data.get("source", "soundcloud")
+                    source_label = SOURCE_LABELS.get(source, source.capitalize())
+                    logger.info(f"[MUSIC] ✅ Ditemukan di {source_label}: {title}")
                     return {
                         "success": True,
                         "song_title": title,
                         "audio_url": audio_url,
-                        "source": "youtube",
-                        "result": f"Lagu ditemukan: {title}\nSiap diputar di ESP32."
+                        "source": source,
+                        "result": f"Lagu ditemukan di {source_label}: {title}\nSiap diputar di ESP32."
                     }
                 else:
                     msg = data.get("message", "Lagu tidak ditemukan.")
                     return {"success": False, "result": msg}
-
             else:
                 logger.error(f"[MUSIC] Stream server error: {response.status_code}")
                 return {"success": False, "result": "Music server sedang bermasalah."}
-
     except httpx.TimeoutException:
         return {"success": False, "result": "Pencarian lagu terlalu lama. Coba judul lebih spesifik."}
     except httpx.RequestError as e:
@@ -156,5 +151,5 @@ def get_current_time() -> str:
 
 
 if __name__ == "__main__":
-    logger.info("XiaoZhi MCP Server started - Google News + Music (Anti-Crash)")
+    logger.info("XiaoZhi MCP Server started - Google News + SoundCloud (Utama) + YouTube (Fallback)")
     mcp.run()

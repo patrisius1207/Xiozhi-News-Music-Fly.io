@@ -1,9 +1,8 @@
-# stream_server.py - Hybrid YouTube + QQ Music (Opsi Server QQ Music)
+# stream_server.py - SoundCloud (Utama) + YouTube (Fallback)
 
 import subprocess
 import json
 import logging
-import time
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -13,8 +12,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ww_music")
 
+
+def search_soundcloud(query: str):
+    """Cari lagu di SoundCloud via yt-dlp (sumber utama)"""
+    try:
+        cmd = [
+            "yt-dlp", f"scsearch3:{query}",
+            "--quiet", "--no-warnings",
+            "-f", "bestaudio/best",
+            "--get-title", "--get-url",
+            "--no-playlist",
+            "--force-ipv4",
+            "--socket-timeout", "15"
+        ]
+        result = subprocess.check_output(cmd, text=True, timeout=25).strip().splitlines()
+        if len(result) >= 2:
+            return {"title": result[0].strip(), "audio_url": result[1].strip(), "source": "soundcloud"}
+    except Exception as e:
+        logger.warning(f"SoundCloud failed: {e}")
+    return None
+
+
 def search_youtube(query: str):
-    """Fallback ke YouTube (stabil)"""
+    """Fallback ke YouTube jika SoundCloud gagal"""
     try:
         cmd = [
             "yt-dlp", f"ytsearch3:{query} official audio",
@@ -33,42 +53,28 @@ def search_youtube(query: str):
         logger.warning(f"YouTube failed: {e}")
     return None
 
-def search_qqmusic(query: str):
-    """Coba ambil dari QQ Music (lebih baik untuk lagu Mandarin)"""
-    try:
-        # Menggunakan qqmusic search via yt-dlp atau direct (saat ini yt-dlp masih buggy, kita pakai simple search)
-        cmd = [
-            "yt-dlp", f"qqmusicsearch:{query}",
-            "--quiet", "--no-warnings",
-            "--get-title", "--get-url",
-            "--no-playlist"
-        ]
-        result = subprocess.check_output(cmd, text=True, timeout=20).strip().splitlines()
-        if len(result) >= 2:
-            return {"title": result[0].strip(), "audio_url": result[1].strip(), "source": "qqmusic"}
-    except:
-        pass
-    return None
 
 def get_audio_url(query: str):
     logger.info(f"Mencari lagu: {query}")
 
-    # Prioritas 1: QQ Music (jika terdeteksi lagu Mandarin)
-    if any(kw in query.lower() for kw in ['远方', '晨风', 'teganya', 'sampaikan rindu', 'lyodra', 'ghea', 'noah']):
-        qq_result = search_qqmusic(query)
-        if qq_result:
-            logger.info(f"✅ Ditemukan di QQ Music: {qq_result['title']}")
-            return qq_result
+    # Prioritas 1: SoundCloud
+    sc_result = search_soundcloud(query)
+    if sc_result:
+        logger.info(f"✅ Ditemukan di SoundCloud: {sc_result['title']}")
+        return sc_result
 
-    # Prioritas 2: YouTube
+    # Prioritas 2: YouTube (fallback)
+    logger.info("SoundCloud tidak menemukan, mencoba YouTube...")
     yt_result = search_youtube(query)
     if yt_result:
         logger.info(f"✅ Ditemukan di YouTube: {yt_result['title']}")
         return yt_result
 
-    return {"error": "Lagu tidak ditemukan di YouTube maupun QQ Music. Coba judul lebih lengkap."}
+    return {"error": "Lagu tidak ditemukan di SoundCloud maupun YouTube. Coba judul lebih lengkap."}
+
 
 class StreamHandler(BaseHTTPRequestHandler):
+
     def log_message(self, fmt, *args):
         logger.info(f"{self.address_string()} {fmt % args}")
 
@@ -76,7 +82,7 @@ class StreamHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path in ("/", "/health"):
-            self._json(200, {"status": "ok", "server": "WW Music - YouTube + QQ Music Hybrid"})
+            self._json(200, {"status": "ok", "server": "WW Music - SoundCloud (Utama) + YouTube (Fallback)"})
             return
 
         if parsed.path == "/stream_pcm":
@@ -97,7 +103,7 @@ class StreamHandler(BaseHTTPRequestHandler):
                 self._json(200, {
                     "title": result["title"],
                     "audio_url": result["audio_url"],
-                    "source": result.get("source", "youtube"),
+                    "source": result.get("source", "soundcloud"),
                     "format": "m4a"
                 })
             return
@@ -115,7 +121,7 @@ class StreamHandler(BaseHTTPRequestHandler):
 
 def run(port: int = 8080):
     server = ThreadingHTTPServer(("0.0.0.0", port), StreamHandler)
-    logger.info("🎵 WW Music Server started - Hybrid YouTube + QQ Music")
+    logger.info("🎵 WW Music Server started - SoundCloud (Utama) + YouTube (Fallback)")
     server.serve_forever()
 
 
