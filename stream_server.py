@@ -1,4 +1,4 @@
-# stream_server.py - Anti Crash Total + Support Berita Tetap Hidup
+# stream_server.py - Versi Cepat Anti-Timeout (Fly.io Friendly)
 
 import subprocess
 import json
@@ -14,54 +14,51 @@ logging.basicConfig(
 logger = logging.getLogger("yt_stream")
 
 def get_audio_url(query: str):
-    try:
-        logger.info(f"Mencari musik: {query}")
+    start_time = time.time()
+    logger.info(f"Mulai mencari: {query}")
 
-        cmd = [
-            "yt-dlp",
-            f"ytsearch4:{query} official audio",
-            "--quiet", "--no-warnings",
-            "-f", "bestaudio[ext=m4a]/bestaudio/best",
-            "--get-title", "--get-url",
-            "--no-playlist",
-            "--extractor-args", "youtube:player_client=android,web,ios",
-            "--force-ipv4",
-            "--sleep-interval", "2"
-        ]
+    # Beberapa strategi dengan timeout lebih ketat
+    strategies = [
+        {"fmt": "bestaudio[ext=m4a]/bestaudio/best", "desc": "m4a priority"},
+        {"fmt": "bestaudio/best", "desc": "fallback audio"}
+    ]
 
-        result = subprocess.check_output(cmd, text=True, timeout=40).strip().splitlines()
+    for strat in strategies:
+        try:
+            cmd = [
+                "yt-dlp",
+                f"ytsearch3:{query} official audio",
+                "--quiet", "--no-warnings",
+                "-f", strat["fmt"],
+                "--get-title", "--get-url",
+                "--no-playlist",
+                "--extractor-args", "youtube:player_client=web,android,ios",
+                "--force-ipv4",
+                "--socket-timeout", "15",           # batasi timeout per request
+                "--retries", "2"
+            ]
 
-        if len(result) >= 2:
-            title = result[0].strip()
-            url = result[1].strip()
-            logger.info(f"✅ Berhasil: {title}")
-            return {"status": "success", "title": title, "audio_url": url}
+            result = subprocess.check_output(cmd, text=True, timeout=25).strip().splitlines()  # timeout total 25 detik
 
-    except Exception as e:
-        logger.error(f"yt-dlp gagal: {str(e)[:200]}")
-        time.sleep(2)
+            if len(result) >= 2:
+                title = result[0].strip()
+                url = result[1].strip()
+                duration = time.time() - start_time
+                logger.info(f"✅ Berhasil ({strat['desc']}) dalam {duration:.1f}s: {title}")
+                return {"status": "success", "title": title, "audio_url": url, "format": "m4a"}
 
-    # Fallback MP3 mono
-    try:
-        cmd = [
-            "yt-dlp", f"ytsearch3:{query}",
-            "--quiet", "--no-warnings", "-x", "--audio-format", "mp3",
-            "--postprocessor-args", "ffmpeg:-ac 1 -ar 22050 -b:a 64k",
-            "--get-title", "--get-url", "--no-playlist"
-        ]
-        result = subprocess.check_output(cmd, text=True, timeout=45).strip().splitlines()
-        if len(result) >= 2:
-            title = result[0].strip()
-            url = result[1].strip()
-            logger.info(f"✅ Fallback MP3: {title}")
-            return {"status": "success", "title": title, "audio_url": url}
-    except Exception as e:
-        logger.error(f"Fallback gagal: {e}")
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Timeout pada strategi {strat['desc']}")
+        except Exception as e:
+            logger.warning(f"Gagal strategi {strat['desc']}: {str(e)[:100]}")
 
-    return {"status": "error", "message": "Saat ini sulit mengambil lagu dari YouTube. Coba lagi nanti atau gunakan judul lebih lengkap."}
+        time.sleep(1)  # delay kecil antar strategi
+
+    logger.error(f"Gagal total untuk: {query}")
+    return {"status": "error", "message": "Lagu ditemukan tapi proses terlalu lambat. Coba judul lebih spesifik."}
 
 
-class Handler(BaseHTTPRequestHandler):
+class StreamHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         logger.info(f"{self.address_string()} {fmt % args}")
 
@@ -69,7 +66,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path in ("/", "/health"):
-            self._json(200, {"status": "ok", "service": "music + news ready"})
+            self._json(200, {"status": "ok", "note": "Anti-timeout mode - max 25s"})
             return
 
         if parsed.path == "/stream_pcm":
@@ -78,9 +75,16 @@ class Handler(BaseHTTPRequestHandler):
             artist = params.get("artist", [""])[0].strip()
             query = f"{song} {artist}".strip() if artist else song
 
+            if not query or query.lower() in ["populer", "audio", "lagu"]:
+                self._json(200, {
+                    "status": "error",
+                    "message": "Query terlalu umum. Sebutkan judul lagu + penyanyi lebih jelas (contoh: popular the weeknd)"
+                })
+                return
+
             result = get_audio_url(query)
 
-            if result.get("status") == "success":
+            if result["status"] == "success":
                 self._json(200, {
                     "title": result["title"],
                     "audio_url": result["audio_url"],
@@ -88,19 +92,15 @@ class Handler(BaseHTTPRequestHandler):
                     "format": "m4a"
                 })
             else:
-                self._json(200, {   # Selalu 200 agar tidak crash ESP32
+                self._json(200, {
                     "status": "error",
+                    "title": query,
                     "audio_url": "",
-                    "message": result.get("message", "Gagal mengambil musik")
+                    "message": result["message"]
                 })
             return
 
-        # Endpoint dummy untuk berita (kalau dibutuhkan)
-        if parsed.path == "/news":
-            self._json(200, {"status": "news service ready (cek music_news_server.py)"})
-            return
-
-        self._json(404, {"error": "Endpoint tidak ditemukan"})
+        self._json(404, {"error": "Not found"})
 
     def _json(self, code: int, data: dict):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -112,8 +112,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def run(port: int = 8080):
-    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    logger.info("🎵 stream_server started - Anti Crash mode")
+    server = ThreadingHTTPServer(("0.0.0.0", port), StreamHandler)
+    logger.info("🎵 stream_server started - Anti Timeout + Fast Search (max ~25 detik)")
     server.serve_forever()
 
 
