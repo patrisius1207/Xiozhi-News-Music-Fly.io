@@ -1,12 +1,13 @@
-# stream_server.py - SoundCloud (Utama) + YouTube (Fallback)
+# stream_server.py - Xiozhi Music
+# SoundCloud (Utama) + YouTube (Fallback)
+# Proxy: yt-dlp download → ffmpeg convert → kirim MP3 ke ESP32
 
 import subprocess
 import json
 import logging
 import re
 import os
-import tempfile
-import requests
+import urllib.parse
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -18,40 +19,31 @@ logger = logging.getLogger("xiozhi_music")
 
 
 def clean_title(title: str) -> str:
-    """Bersihkan title dari noise seperti [abc123].mp3 atau filename mentah"""
-    # Hapus ekstensi file di akhir
     title = re.sub(r'\.(mp3|m4a|flac|wav|ogg)$', '', title, flags=re.IGNORECASE)
-    # Hapus YouTube/SoundCloud ID dalam kurung kotak: [a1xZrLE73Uc]
     title = re.sub(r'\[[a-zA-Z0-9_-]{6,}\]', '', title)
-    # Hapus kurung kosong yang tersisa
     title = re.sub(r'\[\s*\]|\(\s*\)', '', title)
-    # Rapikan spasi berlebih
-    title = ' '.join(title.split())
-    return title.strip()
+    return ' '.join(title.split()).strip()
 
 
-def search_soundcloud(query: str):
-    """Cari lagu di SoundCloud via yt-dlp (sumber utama)"""
+def find_song(query: str):
+    """Cari lagu di SoundCloud dulu, fallback ke YouTube. Return dict atau None."""
+    # SoundCloud
     try:
         cmd = [
             "yt-dlp", f"scsearch3:{query}",
             "--quiet", "--no-warnings",
             "-f", "bestaudio/best",
             "--get-title", "--get-url",
-            "--no-playlist",
-            "--force-ipv4",
-            "--socket-timeout", "15"
+            "--no-playlist", "--force-ipv4", "--socket-timeout", "15"
         ]
-        result = subprocess.check_output(cmd, text=True, timeout=25).strip().splitlines()
-        if len(result) >= 2:
-            return {"title": clean_title(result[0].strip()), "audio_url": result[1].strip(), "source": "soundcloud"}
+        lines = subprocess.check_output(cmd, text=True, timeout=25).strip().splitlines()
+        if len(lines) >= 2:
+            logger.info(f"✅ Ditemukan di SoundCloud: {clean_title(lines[0])}")
+            return {"title": clean_title(lines[0]), "source": "soundcloud", "yt_url": ""}
     except Exception as e:
         logger.warning(f"SoundCloud failed: {e}")
-    return None
 
-
-def search_youtube(query: str):
-    """Fallback ke YouTube jika SoundCloud gagal"""
+    # YouTube fallback
     try:
         cmd = [
             "yt-dlp", f"ytsearch3:{query} official audio",
@@ -60,34 +52,85 @@ def search_youtube(query: str):
             "--get-title", "--get-url",
             "--no-playlist",
             "--extractor-args", "youtube:player_client=web,android",
-            "--force-ipv4",
-            "--socket-timeout", "15"
+            "--force-ipv4", "--socket-timeout", "15"
         ]
-        result = subprocess.check_output(cmd, text=True, timeout=25).strip().splitlines()
-        if len(result) >= 2:
-            return {"title": clean_title(result[0].strip()), "audio_url": result[1].strip(), "source": "youtube"}
+        lines = subprocess.check_output(cmd, text=True, timeout=25).strip().splitlines()
+        if len(lines) >= 2:
+            logger.info(f"✅ Ditemukan di YouTube: {clean_title(lines[0])}")
+            return {"title": clean_title(lines[0]), "source": "youtube", "yt_url": lines[1].strip()}
     except Exception as e:
         logger.warning(f"YouTube failed: {e}")
+
     return None
 
 
-def get_audio_url(query: str):
-    logger.info(f"Mencari lagu: {query}")
+def download_to_mp3(query: str, source: str, yt_url: str = None) -> str:
+    """Download lagu dan convert ke MP3 mono 64k. Return path file MP3 atau None."""
+    raw_path = "/tmp/xiozhi_raw"
+    out_path = f"/tmp/xiozhi_{abs(hash(query)) % 999999}.mp3"
 
-    # Prioritas 1: SoundCloud
-    sc_result = search_soundcloud(query)
-    if sc_result:
-        logger.info(f"✅ Ditemukan di SoundCloud: {sc_result['title']}")
-        return sc_result
+    # Bersihkan file lama
+    for ext in ["m4a", "mp3", "webm", "opus", "ogg", "aac"]:
+        p = f"{raw_path}.{ext}"
+        if os.path.exists(p):
+            os.unlink(p)
+    if os.path.exists(out_path):
+        os.unlink(out_path)
 
-    # Prioritas 2: YouTube (fallback)
-    logger.info("SoundCloud tidak menemukan, mencoba YouTube...")
-    yt_result = search_youtube(query)
-    if yt_result:
-        logger.info(f"✅ Ditemukan di YouTube: {yt_result['title']}")
-        return yt_result
+    try:
+        if source == "soundcloud":
+            dl_cmd = [
+                "yt-dlp", f"scsearch1:{query}",
+                "--quiet", "--no-warnings",
+                "-f", "bestaudio/best",
+                "--no-playlist", "--force-ipv4", "--socket-timeout", "15",
+                "-o", f"{raw_path}.%(ext)s"
+            ]
+        else:
+            dl_cmd = [
+                "yt-dlp", yt_url,
+                "--quiet", "--no-warnings",
+                "-f", "bestaudio[ext=m4a]/bestaudio/best",
+                "--no-playlist", "--force-ipv4", "--socket-timeout", "15",
+                "-o", f"{raw_path}.%(ext)s"
+            ]
 
-    return {"error": "Lagu tidak ditemukan di SoundCloud maupun YouTube. Coba judul lebih lengkap."}
+        subprocess.run(dl_cmd, timeout=60, check=True, stderr=subprocess.DEVNULL)
+
+        # Cari file hasil download
+        raw_file = None
+        for ext in ["m4a", "mp3", "webm", "opus", "ogg", "aac"]:
+            candidate = f"{raw_path}.{ext}"
+            if os.path.exists(candidate) and os.path.getsize(candidate) > 0:
+                raw_file = candidate
+                break
+
+        if not raw_file:
+            logger.error("File hasil download tidak ditemukan")
+            return None
+
+        # Convert ke MP3 mono 64k
+        ret = subprocess.run(
+            ["ffmpeg", "-y", "-i", raw_file,
+             "-vn", "-ar", "44100", "-ac", "1", "-b:a", "64k",
+             "-f", "mp3", out_path],
+            timeout=60, stderr=subprocess.DEVNULL
+        )
+        os.unlink(raw_file)
+
+        if ret.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+            logger.error("ffmpeg convert gagal")
+            return None
+
+        logger.info(f"✅ MP3 siap: {os.path.getsize(out_path)} bytes")
+        return out_path
+
+    except subprocess.TimeoutExpired:
+        logger.error("Download timeout")
+    except Exception as e:
+        logger.error(f"Download error: {e}")
+
+    return None
 
 
 class StreamHandler(BaseHTTPRequestHandler):
@@ -99,7 +142,7 @@ class StreamHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path in ("/", "/health"):
-            self._json(200, {"status": "ok", "server": "Xiozhi Music - SoundCloud (Utama) + YouTube (Fallback)"})
+            self._json(200, {"status": "ok", "server": "Xiozhi Music"})
             return
 
         if parsed.path == "/stream_pcm":
@@ -112,134 +155,68 @@ class StreamHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "song wajib"})
                 return
 
-            result = get_audio_url(query)
+            logger.info(f"Mencari lagu: {query}")
+            result = find_song(query)
 
-            if "error" in result:
-                self._json(200, {"status": "error", "message": result["error"]})
-            else:
-                # Buat proxy URL agar ESP32 tidak akses SoundCloud/YouTube langsung
-                import urllib.parse
-                encoded_url = urllib.parse.quote(result["audio_url"], safe="")
-                encoded_song = urllib.parse.quote(result["title"], safe="")
-                host = self.headers.get("Host", "localhost")
-                proxy_url = f"http://{host}/proxy?song={encoded_song}&url={encoded_url}"
-                self._json(200, {
-                    "title": result["title"],
-                    "audio_url": proxy_url,
-                    "source": result.get("source", "soundcloud"),
-                    "format": "mp3"
-                })
+            if not result:
+                self._json(200, {"status": "error", "message": "Lagu tidak ditemukan. Coba judul lebih lengkap."})
+                return
+
+            encoded_query = urllib.parse.quote(query, safe="")
+            encoded_source = urllib.parse.quote(result["source"], safe="")
+            encoded_yt = urllib.parse.quote(result.get("yt_url", ""), safe="")
+            host = self.headers.get("Host", "localhost")
+            proxy_url = f"http://{host}/proxy?q={encoded_query}&src={encoded_source}&yt={encoded_yt}"
+
+            self._json(200, {
+                "title": result["title"],
+                "audio_url": proxy_url,
+                "source": result["source"],
+                "format": "mp3"
+            })
             return
 
         if parsed.path == "/proxy":
             params = parse_qs(parsed.query)
-            target_url = params.get("url", [""])[0].strip()
-            song = params.get("song", [""])[0].strip()
+            query = params.get("q", [""])[0].strip()
+            source = params.get("src", ["soundcloud"])[0].strip()
+            yt_url = params.get("yt", [""])[0].strip()
 
-            if not target_url and not song:
-                self._json(400, {"error": "url atau song wajib"})
+            if not query:
+                self._json(400, {"error": "q wajib"})
                 return
-            try:
-                is_hls = ".m3u8" in target_url or "playlist" in target_url
 
-                if is_hls or song:
-                    # Untuk HLS atau jika ada param song: download ulang fresh via yt-dlp + ffmpeg
-                    # Ini menghindari URL expire masalah
-                    query = song if song else target_url
-                    logger.info(f"Proxy: download fresh untuk: {query[:60]}")
+            logger.info(f"Proxy download: [{source}] {query[:50]}")
+            mp3_path = download_to_mp3(query, source, yt_url or None)
 
-                    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-                        tmp_path = tmp.name
-
-                    # Gunakan yt-dlp langsung download + convert ke mp3
-                    cmd = [
-                        "yt-dlp",
-                        f"scsearch1:{query}" if song else target_url,
-                        "--quiet", "--no-warnings",
-                        "-f", "bestaudio/best",
-                        "--no-playlist",
-                        "--force-ipv4",
-                        "--socket-timeout", "15",
-                        "-o", tmp_path.replace(".mp3", ".%(ext)s"),
-                        "--extract-audio",
-                        "--audio-format", "mp3",
-                        "--audio-quality", "64K",
-                        "--postprocessor-args", "-ar 44100 -ac 1"
-                    ]
-
-                    # Cari file hasil download (bisa .mp3 langsung)
-                    ret = subprocess.run(cmd, timeout=90, stderr=subprocess.DEVNULL)
-
-                    # yt-dlp mungkin simpan dengan nama berbeda, cari file yang ada
-                    import glob
-                    base = tmp_path.replace(".mp3", "")
-                    candidates = glob.glob(base + ".*")
-                    actual_path = candidates[0] if candidates else tmp_path
-
-                    # Jika bukan mp3, convert dengan ffmpeg
-                    if not actual_path.endswith(".mp3"):
-                        mp3_path = base + ".mp3"
-                        subprocess.run(
-                            ["ffmpeg", "-y", "-i", actual_path, "-vn",
-                             "-ar", "44100", "-ac", "1", "-b:a", "64k",
-                             "-f", "mp3", mp3_path],
-                            timeout=60, stderr=subprocess.DEVNULL
-                        )
-                        os.unlink(actual_path)
-                        actual_path = mp3_path
-
-                    if not os.path.exists(actual_path) or os.path.getsize(actual_path) == 0:
-                        self._json(502, {"error": "Gagal download audio"})
-                        return
-
-                    file_size = os.path.getsize(actual_path)
-                    self.send_response(200)
-                    self.send_header("Content-Type", "audio/mpeg")
-                    self.send_header("Content-Length", str(file_size))
-                    self.send_header("Accept-Ranges", "bytes")
-                    self.end_headers()
-                    with open(actual_path, "rb") as f:
-                        while True:
-                            chunk = f.read(8192)
-                            if not chunk:
-                                break
-                            try:
-                                self.wfile.write(chunk)
-                            except BrokenPipeError:
-                                break
-                    os.unlink(actual_path)
-
-                else:
-                    # Direct MP3 URL — download ke temp dulu, baru kirim
-                    headers = {"User-Agent": "Mozilla/5.0"}
-                    r = requests.get(target_url, headers=headers, timeout=30)
-                    r.raise_for_status()
-
-                    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-                        tmp.write(r.content)
-                        tmp_path = tmp.name
-
-                    file_size = os.path.getsize(tmp_path)
-                    self.send_response(200)
-                    self.send_header("Content-Type", "audio/mpeg")
-                    self.send_header("Content-Length", str(file_size))
-                    self.send_header("Accept-Ranges", "bytes")
-                    self.end_headers()
-                    with open(tmp_path, "rb") as f:
-                        while True:
-                            chunk = f.read(8192)
-                            if not chunk:
-                                break
-                            try:
-                                self.wfile.write(chunk)
-                            except BrokenPipeError:
-                                break
-                    os.unlink(tmp_path)
-
-            except Exception as e:
-                logger.error(f"Proxy error: {e}")
+            if not mp3_path:
                 try:
-                    self._json(502, {"error": "Gagal proxy audio"})
+                    self._json(502, {"error": "Gagal download audio"})
+                except Exception:
+                    pass
+                return
+
+            file_size = os.path.getsize(mp3_path)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/mpeg")
+                self.send_header("Content-Length", str(file_size))
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                with open(mp3_path, "rb") as f:
+                    while True:
+                        chunk = f.read(8192)
+                        if not chunk:
+                            break
+                        try:
+                            self.wfile.write(chunk)
+                        except BrokenPipeError:
+                            break
+            except Exception as e:
+                logger.error(f"Send error: {e}")
+            finally:
+                try:
+                    os.unlink(mp3_path)
                 except Exception:
                     pass
             return
@@ -257,7 +234,7 @@ class StreamHandler(BaseHTTPRequestHandler):
 
 def run(port: int = 8080):
     server = ThreadingHTTPServer(("0.0.0.0", port), StreamHandler)
-    logger.info("🎵 Xiozhi Music Server started - SoundCloud (Utama) + YouTube (Fallback)")
+    logger.info("🎵 Xiozhi Music Server started - SoundCloud + YouTube + MP3 Proxy")
     server.serve_forever()
 
 
