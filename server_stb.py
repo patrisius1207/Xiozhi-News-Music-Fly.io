@@ -6,8 +6,43 @@ import re
 import subprocess
 import os
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 MCP_ENDPOINT = os.environ.get('MCP_ENDPOINT', '')
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_ALLOWED_ID = os.environ.get('TELEGRAM_ALLOWED_USER_ID', '')
+
+executor = ThreadPoolExecutor(max_workers=4)
+
+def _http_get(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=35) as r:
+        return json.loads(r.read().decode())
+
+def _http_post(url, data):
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read().decode())
+
+async def tg_get_updates(offset=None):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?timeout=10"
+    if offset:
+        url += f"&offset={offset}"
+    try:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(executor, _http_get, url)
+    except Exception as e:
+        print(f"[TG] getUpdates error: {e}")
+        return {"ok": False, "result": []}
+
+async def tg_send(chat_id, text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = json.dumps({"chat_id": chat_id, "text": text}).encode()
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(executor, _http_post, url, data)
+    except Exception as e:
+        print(f"[TG] sendMessage error: {e}")
 
 async def get_news(category="terkini"):
     urls = {
@@ -20,6 +55,12 @@ async def get_news(category="terkini"):
         "bisnis":    "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVdZU0FtVnVHZ0pWVXlnQVAB?hl=id-ID&gl=ID&ceid=ID:id",
     }
     url = urls.get(category.lower(), urls["terkini"])
+    try:
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(executor, _http_get, url)
+        return str(data)
+    except Exception as e:
+        pass
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=10) as r:
@@ -42,19 +83,73 @@ async def get_news(category="terkini"):
 
 async def get_music_url(song_name):
     try:
-        result = subprocess.run(
-            ["yt-dlp", "-f", "bestaudio", "--get-url", f"ytsearch1:{song_name}"],
-            capture_output=True, text=True, timeout=30
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            executor,
+            lambda: subprocess.run(
+                ["yt-dlp", "-f", "bestaudio", "--get-url", f"ytsearch1:{song_name}"],
+                capture_output=True, text=True, timeout=30
+            )
         )
         url = result.stdout.strip()
         if url:
             return {"success": True, "audio_url": url, "title": song_name, "source": "youtube", "result": f"Lagu ditemukan: {song_name}. Siap diputar di ESP32."}
     except Exception as e:
         print(f"[MUSIC] Error: {e}")
-    return {"success": False, "result": "Lagu tidak ditemukan. Coba judul lebih spesifik."}
+    return {"success": False, "result": "Lagu tidak ditemukan."}
+
+async def telegram_loop():
+    if not TELEGRAM_BOT_TOKEN:
+        print("[TG] Token tidak ada, dinonaktifkan.")
+        return
+    print("[TG] Telegram bot aktif!")
+    offset = None
+    while True:
+        try:
+            data = await tg_get_updates(offset)
+            for update in data.get("result", []):
+                offset = update["update_id"] + 1
+                msg = update.get("message", {})
+                chat_id = msg.get("chat", {}).get("id")
+                user_id = str(msg.get("from", {}).get("id", ""))
+                text = msg.get("text", "").strip()
+                if not text or not chat_id:
+                    continue
+                if TELEGRAM_ALLOWED_ID and user_id != TELEGRAM_ALLOWED_ID:
+                    await tg_send(chat_id, "Akses ditolak.")
+                    continue
+                print(f"[TG] Pesan: {text}")
+                if text == "/start":
+                    await tg_send(chat_id, "Halo! Saya XiaoZhi Controller.\n\nContoh:\n- Putar lagu Dewa 19\n- Berita hari ini\n- Berita teknologi\n- Jam berapa sekarang?")
+                    continue
+                text_lower = text.lower()
+                if any(k in text_lower for k in ["berita", "news", "kabar"]):
+                    cat = "terkini"
+                    for k in ["teknologi", "olahraga", "hiburan", "bisnis", "nasional", "dunia"]:
+                        if k in text_lower:
+                            cat = k
+                            break
+                    await tg_send(chat_id, "Mengambil berita...")
+                    result = await get_news(cat)
+                    await tg_send(chat_id, result)
+                elif any(k in text_lower for k in ["putar", "lagu", "musik", "play"]):
+                    await tg_send(chat_id, f"Mencari: {text}...")
+                    music = await get_music_url(text)
+                    if music["success"]:
+                        await tg_send(chat_id, f"Lagu ditemukan!\nJudul: {music['title']}\nDikirim ke ESP32...")
+                    else:
+                        await tg_send(chat_id, music["result"])
+                elif any(k in text_lower for k in ["jam", "waktu", "time", "tanggal"]):
+                    now = datetime.now()
+                    await tg_send(chat_id, f"Sekarang pukul {now.strftime('%H:%M')} WIB, tanggal {now.strftime('%d %B %Y')}.")
+                else:
+                    await tg_send(chat_id, f"Perintah tidak dikenal.\n\nCoba:\n- Putar lagu ...\n- Berita teknologi\n- Jam berapa sekarang?")
+        except Exception as e:
+            print(f"[TG] Error: {e}")
+            await asyncio.sleep(5)
 
 async def handle_mcp():
-    print(f"Connecting to {MCP_ENDPOINT}")
+    print("Connecting to MCP...")
     async with websockets.connect(MCP_ENDPOINT) as ws:
         print("Connected to XiaoZhi MCP!")
         async for message in ws:
@@ -72,7 +167,7 @@ async def handle_mcp():
                 elif method == "tools/call":
                     tool = data["params"]["name"]
                     args = data["params"].get("arguments", {})
-                    print(f"-> Tool: {tool} args: {args}")
+                    print(f"-> Tool: {tool}")
                     if tool == "get_latest_news":
                         result = await get_news(args.get("category", "terkini"))
                     elif tool == "search_music_url":
@@ -89,16 +184,22 @@ async def handle_mcp():
                     if msg_id is not None:
                         await ws.send(json.dumps({"jsonrpc": "2.0", "id": msg_id, "result": {}}))
             except Exception as e:
-                print(f"[ERROR] {e}")
+                print(f"[MCP ERROR] {e}")
 
-async def main():
+async def mcp_loop():
     while True:
         try:
             await handle_mcp()
         except Exception as e:
-            print(f"[DISCONNECT] Reconnecting in 5s... ({e})")
+            print(f"[MCP] Reconnecting in 5s... ({e})")
             await asyncio.sleep(5)
 
+async def main():
+    print("XiaoZhi MCP + Telegram Server - STB Edition")
+    await asyncio.gather(
+        mcp_loop(),
+        telegram_loop()
+    )
+
 if __name__ == "__main__":
-    print("XiaoZhi MCP Server - STB Edition")
     asyncio.run(main())
